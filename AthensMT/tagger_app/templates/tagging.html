@@ -3,47 +3,81 @@
 <html>
 <head>
     <title>Tagging Progress</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+        }
+        #logs {
+            max-height: 300px;
+            overflow-y: auto;
+            border: 1px solid #ccc;
+            padding: 10px;
+            margin-top: 20px;
+        }
+        .log-entry {
+            border-bottom: 1px solid #eee;
+            padding: 5px 0;
+        }
+    </style>
 </head>
 <body>
-<h1>Tagging In Progress...</h1>
-<p id="progress-info"></p>
+    <h1>Tagging In Progress...</h1>
+    <p id="progress-info">Starting tagging...</p>
 
-<script>
-    function checkProgress() {
-        fetch('/tagging/progress/')
-            .then(response => response.json())
-            .then(data => {
-                if (data.error) {
-                    document.getElementById('progress-info').innerHTML = data.error;
-                    return;
-                }
+    <h3>Live Logs:</h3>
+    <div id="logs"></div>
 
-                let done = data.done;
-                let total = data.total;
-                let status = data.status;
+    <script>
+        function checkProgress() {
+            fetch('/tagging/progress/')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.error) {
+                        document.getElementById('progress-info').innerHTML = data.error;
+                        return;
+                    }
 
-                document.getElementById('progress-info').innerHTML = 
-                    `Processed ${done} of ${total} rows... [${status}]`;
+                    let done = data.done;
+                    let total = data.total;
+                    let status = data.status;
 
-                // If finished, redirect to results
-                if (status === "finished") {
-                    window.location.href = "/results/";
-                } else if (status === "error") {
-                    document.getElementById('progress-info').innerHTML += 
-                        "<br>An error occurred during tagging.";
-                } else {
-                    // Keep polling
-                    setTimeout(checkProgress, 1000);
-                }
-            })
-            .catch(err => {
-                console.log("Error fetching progress", err);
-                setTimeout(checkProgress, 2000);
-            });
-    }
+                    document.getElementById('progress-info').innerHTML = 
+                        `Processed ${done} of ${total} rows... [${status}]`;
 
-    // Start polling after page loads
-    checkProgress();
-</script>
+                    // Update logs
+                    let logContainer = document.getElementById('logs');
+                    logContainer.innerHTML = ''; // Clear old logs
+
+                    data.logs.forEach(log => {
+                        let logEntry = document.createElement('div');
+                        logEntry.classList.add("log-entry");
+                        logEntry.innerHTML = `
+                            <strong>Row ${log.row_index}, ${log.column}</strong><br>
+                            <em>Prompt:</em> ${log.prompt}<br>
+                            <strong>Best Answer:</strong> ${log.best_answer}<br>
+                            <em>Explanation:</em> ${log.explanation}
+                        `;
+                        logContainer.appendChild(logEntry);
+                    });
+
+                    // Auto-scroll logs to bottom
+                    logContainer.scrollTop = logContainer.scrollHeight;
+
+                    // If finished, redirect to results
+                    if (status === "finished") {
+                        window.location.href = "/results/";
+                    } else {
+                        setTimeout(checkProgress, 1000);
+                    }
+                })
+                .catch(err => {
+                    console.log("Error fetching progress", err);
+                    setTimeout(checkProgress, 2000);
+                });
+        }
+
+        // Start polling after page loads
+        checkProgress();
+    </script>
 </body>
 </html>

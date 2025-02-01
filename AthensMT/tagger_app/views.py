@@ -139,17 +139,59 @@ def tagging_view(request):
     # Render the template which will poll for progress
     return render(request, 'tagging.html', {})
 
+from django.http import JsonResponse
+from .utils import PROGRESS_STATUS
+
+from django.http import JsonResponse
+import pandas as pd
+import os
+from .utils import PROGRESS_STATUS
+
 def tagging_progress_view(request):
     """
-    An endpoint polled by the frontend to get the current tagging progress.
-    Returns JSON: { done, total, status, tagged_file, logs_file }
+    Returns JSON progress for the tagging process, including real-time logs.
     """
     session_key = request.session.get('tagging_session_key')
     if not session_key or session_key not in PROGRESS_STATUS:
         return JsonResponse({'error': 'No progress data found'}, status=400)
 
-    data = PROGRESS_STATUS[session_key]
-    return JsonResponse(data)
+    progress_data = PROGRESS_STATUS[session_key]
+
+    # Read logs (if exists) to get latest logs
+    logs = []
+    logs_path = progress_data.get("logs_file", "")
+    if logs_path and os.path.exists(logs_path):
+        try:
+            df_logs = pd.read_csv(logs_path)
+            logs = df_logs.tail(10).to_dict('records')  # Get the last 10 logs
+        except Exception as e:
+            logs = [{"error": f"Failed to read logs: {str(e)}"}]
+
+    return JsonResponse({
+        "done": progress_data["done"],
+        "total": progress_data["total"],
+        "status": progress_data["status"],
+        "logs": logs
+    })
+
 def results_view(request):
     """ Screen 4: Download the tagged CSV & logs """
-    return render(request, 'results.html')
+    session_key = request.session.get('tagging_session_key')
+    if not session_key or session_key not in PROGRESS_STATUS:
+        return render(request, 'results.html', {
+            'tagged_file': None,
+            'logs_file': None,
+        })
+
+    data = PROGRESS_STATUS[session_key]
+    if data["status"] != "finished":
+        # Not finished or error
+        return render(request, 'results.html', {
+            'tagged_file': None,
+            'logs_file': None,
+        })
+
+    return render(request, 'results.html', {
+        'tagged_file': data["tagged_file"],
+        'logs_file': data["logs_file"],
+    })
