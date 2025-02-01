@@ -1,0 +1,46 @@
+<!-- tagger_app/templates/define_columns.html -->
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Define Columns</title>
+</head>
+<body>
+<h1>Define Columns & Prompts</h1>
+
+<form method="POST">
+    {% csrf_token %}
+
+    <!-- Select Input Columns -->
+    <h3>Select Input Columns:</h3>
+    {% for col in columns %}
+        <label>
+            <input type="checkbox" name="input_columns" value="{{ col }}">
+            {{ col }}
+        </label><br>
+    {% endfor %}
+
+    <hr>
+
+    <!-- Define Output Columns & Prompts -->
+    <h3>Output Columns & Prompts</h3>
+    <div id="prompt-section">
+        <!-- Existing config_data displayed here -->
+        {% for row in config_data %}
+            <div class="prompt-row">
+                <input type="text" name="output_column" value="{{ row.OutputColumn }}" placeholder="Output Column">
+                <input type="text" name="prompt_template" value="{{ row.PromptTemplate }}" placeholder="Prompt Template">
+            </div>
+        {% endfor %}
+        
+        <!-- One empty row by default for new entries -->
+        <div class="prompt-row">
+            <input type="text" name="output_column" placeholder="Output Column">
+            <input type="text" name="prompt_template" placeholder="Prompt Template">
+        </div>
+    </div>
+
+    <button type="submit">Continue to Tagging</button>
+</form>
+
+</body>
+</html>
