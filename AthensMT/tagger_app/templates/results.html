@@ -1,24 +1,66 @@
-<!-- tagger_app/templates/results.html -->
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Tagging Results</title>
-</head>
-<body>
-<h1>Tagging Complete</h1>
+{% extends "base.html" %}
 
-{% if tagged_file %}
-  <p><a href="/{{ tagged_file }}" download>Download Tagged CSV</a></p>
-{% else %}
-  <p>No tagged file available.</p>
-{% endif %}
+{% block content %}
+<div class="container mt-5">
+    <h1 class="text-primary">Tagging Results</h1>
+    <p class="text-muted">Your tagged CSV file is ready! You can preview and download it below.</p>
 
-{% if logs_file %}
-  <p><a href="/{{ logs_file }}" download>Download Logs CSV</a></p>
-{% else %}
-  <p>No logs file available.</p>
-{% endif %}
+    <div class="card p-4 mt-3 shadow">
+        <h4 class="mb-3 text-success">Download Files</h4>
 
-<p><a href="/">Start Over</a></p>
-</body>
-</html>
+        <!-- Debug: Show Paths -->
+        <p class="text-info">Tagged File URL: {{ tagged_file_url }}</p>
+        <p class="text-info">Logs File URL: {{ logs_file_url }}</p>
+
+        <!-- Download Buttons -->
+        {% if tagged_file_url %}
+            <div class="mb-3">
+                <a href="{{ tagged_file_url }}" class="btn btn-primary btn-lg w-100" download>📥 Download Tagged CSV</a>
+            </div>
+        {% else %}
+            <p class="text-danger">❌ Tagged file URL is empty!</p>
+        {% endif %}
+
+        {% if logs_file_url %}
+            <div class="mb-3">
+                <a href="{{ logs_file_url }}" class="btn btn-secondary btn-lg w-100" download>📥 Download Logs</a>
+            </div>
+        {% else %}
+            <p class="text-danger">❌ Logs file URL is empty!</p>
+        {% endif %}
+
+        <hr>
+
+        <!-- Preview Table -->
+        <h4 class="mb-3 text-info">Preview</h4>
+        {% if table_columns and table_data %}
+            <div class="table-responsive" style="max-height: 400px; overflow-y: auto;">
+                <table class="table table-striped table-dark">
+                    <thead>
+                        <tr>
+                            {% for col in table_columns %}
+                            <th>{{ col }}</th>
+                            {% endfor %}
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for row in table_data %}
+                        <tr>
+                            {% for cell in row %}
+                            <td>{{ cell }}</td>
+                            {% endfor %}
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        {% else %}
+            <p class="text-danger">❌ No preview available! `table_columns` or `table_data` is empty.</p>
+        {% endif %}
+
+        <hr>
+        <p class="text-muted">* The preview shows only the first 10 rows.</p>
+    </div>
+</div>
+
+{% endblock %}

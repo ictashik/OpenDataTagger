@@ -1,16 +1,30 @@
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Upload CSV</title>
-</head>
-<body>
-    <h1>Upload CSV & Config Files</h1>
+{% extends "base.html" %}
 
-    <form method="POST" enctype="multipart/form-data">
-        {% csrf_token %}
-        {{ form.as_p }}
-        <button type="submit">Upload & Continue</button>
-    </form>
+{% block content %}
+<div class="container mt-5">
+    <h1 class="text-primary">Upload CSV File</h1>
+    <p class="text-muted">Please upload your dataset for tagging.</p>
 
-</body>
-</html>
+    <div class="card p-4 mt-3 shadow">
+        <form method="post" enctype="multipart/form-data" class="needs-validation">
+            {% csrf_token %}
+            
+            <!-- CSV File Input -->
+            <div class="mb-3">
+                <label class="form-label fw-bold">Upload CSV File</label>
+                <input type="file" name="csv_file" class="form-control" accept=".csv" required>
+            </div>
+
+            <!-- Optional Config File -->
+            <div class="mb-3">
+                <label class="form-label">Upload Config File (Optional)</label>
+                <input type="file" name="config_file" class="form-control" accept=".csv">
+                <small class="text-muted">You can upload a pre-existing config file for automated tagging settings.</small>
+            </div>
+
+            <!-- Submit Button -->
+            <button type="submit" class="btn btn-primary w-100">Upload & Continue</button>
+        </form>
+    </div>
+</div>
+{% endblock %}
