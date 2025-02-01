@@ -1,83 +1,90 @@
-<!-- tagger_app/templates/tagging.html -->
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Tagging Progress</title>
-    <style>
-        body {
-            font-family: Arial, sans-serif;
-        }
-        #logs {
-            max-height: 300px;
-            overflow-y: auto;
-            border: 1px solid #ccc;
-            padding: 10px;
-            margin-top: 20px;
-        }
-        .log-entry {
-            border-bottom: 1px solid #eee;
-            padding: 5px 0;
-        }
-    </style>
-</head>
-<body>
-    <h1>Tagging In Progress...</h1>
-    <p id="progress-info">Starting tagging...</p>
+{% extends "base.html" %}
 
-    <h3>Live Logs:</h3>
-    <div id="logs"></div>
+{% block content %}
+<div class="container mt-4">
+    <h1 class="text-primary">Tagging in Progress...</h1>
 
-    <script>
-        function checkProgress() {
-            fetch('/tagging/progress/')
-                .then(response => response.json())
-                .then(data => {
-                    if (data.error) {
-                        document.getElementById('progress-info').innerHTML = data.error;
-                        return;
-                    }
+    <!-- Progress Bar -->
+    <div class="progress mt-3">
+        <div id="progress-bar" class="progress-bar bg-info" role="progressbar" style="width: 0%;"></div>
+    </div>
+    <p id="progress-info" class="mt-2 text-muted">Starting tagging...</p>
 
-                    let done = data.done;
-                    let total = data.total;
-                    let status = data.status;
+    <!-- Live Logs -->
+    <h3 class="mt-4 text-secondary">Live Logs</h3>
+    <div id="logs" class="log-container border p-3 text-light bg-dark rounded">
+        <p id="log-placeholder" class="text-muted">Waiting for logs...</p>
+    </div>
+</div>
+<script>
+    function checkProgress() {
+        fetch('/tagging/progress/')
+            .then(response => response.json())
+            .then(data => {
+                console.log("Progress API Response:", data); // Debugging
 
-                    document.getElementById('progress-info').innerHTML = 
-                        `Processed ${done} of ${total} rows... [${status}]`;
+                if (data.error) {
+                    document.getElementById('progress-info').innerHTML = data.error;
+                    return;
+                }
 
-                    // Update logs
-                    let logContainer = document.getElementById('logs');
-                    logContainer.innerHTML = ''; // Clear old logs
+                let done = data.done;
+                let total = data.total;
+                let status = data.status;
 
-                    data.logs.forEach(log => {
-                        let logEntry = document.createElement('div');
-                        logEntry.classList.add("log-entry");
-                        logEntry.innerHTML = `
-                            <strong>Row ${log.row_index}, ${log.column}</strong><br>
-                            <em>Prompt:</em> ${log.prompt}<br>
-                            <strong>Best Answer:</strong> ${log.best_answer}<br>
-                            <em>Explanation:</em> ${log.explanation}
-                        `;
-                        logContainer.appendChild(logEntry);
-                    });
+                // Update Progress Bar
+                let progressBar = document.getElementById('progress-bar');
+                let percentage = (done / total) * 100;
+                progressBar.style.width = percentage + "%";
 
-                    // Auto-scroll logs to bottom
-                    logContainer.scrollTop = logContainer.scrollHeight;
+                document.getElementById('progress-info').innerHTML = 
+                    `Processed ${done} of ${total} rows... [${status}]`;
 
-                    // If finished, redirect to results
-                    if (status === "finished") {
-                        window.location.href = "/results/";
-                    } else {
-                        setTimeout(checkProgress, 1000);
-                    }
-                })
-                .catch(err => {
-                    console.log("Error fetching progress", err);
-                    setTimeout(checkProgress, 2000);
+                // Ensure logs container exists
+                let logContainer = document.getElementById('logs');
+                let logPlaceholder = document.getElementById('log-placeholder');
+
+                if (!logContainer) {
+                    console.error("Logs container not found.");
+                    return;
+                }
+
+                if (logPlaceholder) {
+                    logPlaceholder.style.display = data.logs.length === 0 ? "block" : "none";
+                }
+
+                logContainer.innerHTML = ''; // Clear old logs
+
+                data.logs.forEach(log => {
+                    let logEntry = document.createElement('div');
+                    logEntry.classList.add("log-entry", "p-2", "border-bottom", "border-secondary");
+                    logEntry.innerHTML = `
+                        <span class="text-warning font-weight-bold">Row ${log.row_index}, ${log.column}</span><br>
+                        <span class="text-light"><strong>Prompt:</strong> ${log.prompt}</span><br>
+                        <span class="text-success"><strong>Best Answer:</strong> ${log.best_answer}</span><br>
+                        <span class="text-info"><em>Explanation:</em> ${log.explanation}</span>
+                    `;
+                    logContainer.appendChild(logEntry);
                 });
-        }
 
-        // Start polling after page loads
-        checkProgress();
-    </script>
-</body>
-</html>
+                // Auto-scroll logs to bottom
+                logContainer.scrollTop = logContainer.scrollHeight;
+
+                // If finished, redirect to results
+                if (status === "finished") {
+                    console.log("Tagging completed. Redirecting to results...");
+                    window.location.href = "/results/";
+                } else {
+                    setTimeout(checkProgress, 1000);
+                }
+            })
+            .catch(err => {
+                console.error("Error fetching progress:", err);
+                setTimeout(checkProgress, 2000);
+            });
+    }
+
+    // Start polling after page loads
+    document.addEventListener("DOMContentLoaded", checkProgress);
+</script>
+{% endblock %}
