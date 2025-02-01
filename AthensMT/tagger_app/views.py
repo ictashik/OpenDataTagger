@@ -16,36 +16,52 @@ from .utils import (
 import uuid
 from .utils import save_config_file
 
+from django.core.files.storage import FileSystemStorage
+import os
+
 def upload_file_view(request):
-    """ Screen 1: Upload CSV & (Optionally) Config File """
+    """Handles file upload and ensures consistent naming."""
     if request.method == 'POST':
         form = UploadForm(request.POST, request.FILES)
         if form.is_valid():
-            # Get the files
             csv_file = form.cleaned_data['csv_file']
             config_file = form.cleaned_data.get('config_file')
 
-            # Save them using FileSystemStorage
-            fs = FileSystemStorage(location='media/')  # or settings.MEDIA_ROOT
-            csv_filename = fs.save(csv_file.name, csv_file)
+            # 🔹 Use FileSystemStorage but overwrite duplicates
+            fs = FileSystemStorage(location='media/')
+            csv_filename = csv_file.name  # Keep original filename
+            csv_path = os.path.join('media', csv_filename)
 
-            # If there's a config file, save it with a similar approach
+            # Delete existing file (to prevent auto-renaming)
+            if os.path.exists(csv_path):
+                os.remove(csv_path)
+
+            # Save the file
+            fs.save(csv_filename, csv_file)
+
+            # Handle config file
             if config_file:
-                config_filename = fs.save(config_file.name, config_file)
+                config_filename = config_file.name
+                config_path = os.path.join('media', config_filename)
+                
+                # Delete existing config if needed
+                if os.path.exists(config_path):
+                    os.remove(config_path)
+
+                fs.save(config_filename, config_file)
             else:
-                config_filename = None
+                config_path = None
 
-            # Store file paths in session (or some global dictionary)
-            request.session['csv_filepath'] = os.path.join('media', csv_filename)
-            request.session['config_filepath'] = os.path.join('media', config_filename) if config_filename else None
+            # Store file paths in session
+            request.session['csv_filepath'] = csv_path
+            request.session['config_filepath'] = config_path
 
-            # Redirect to define-columns step
+            # Redirect to column definition
             return redirect('define_columns')
     else:
         form = UploadForm()
 
     return render(request, 'upload.html', {'form': form})
-
 # tagger_app/views.py
 
 
@@ -147,6 +163,27 @@ import pandas as pd
 import os
 from .utils import PROGRESS_STATUS
 
+from django.http import JsonResponse
+import pandas as pd
+import os
+from .utils import PROGRESS_STATUS
+
+from django.http import JsonResponse
+import pandas as pd
+import os
+from .utils import PROGRESS_STATUS
+
+from django.http import JsonResponse
+import pandas as pd
+import os
+import time  # Added to ensure we wait before reading the file
+from .utils import PROGRESS_STATUS
+from django.http import JsonResponse
+import pandas as pd
+import os
+import time  # Ensures logs are flushed before reading
+from .utils import PROGRESS_STATUS
+
 def tagging_progress_view(request):
     """
     Returns JSON progress for the tagging process, including real-time logs.
@@ -156,14 +193,22 @@ def tagging_progress_view(request):
         return JsonResponse({'error': 'No progress data found'}, status=400)
 
     progress_data = PROGRESS_STATUS[session_key]
-
-    # Read logs (if exists) to get latest logs
     logs = []
-    logs_path = progress_data.get("logs_file", "")
+
+    # 🔹 Get the correct logs file from session, not a stale one
+    logs_path = request.session.get("csv_filepath", "").replace(".csv", "_logs.csv")
+
     if logs_path and os.path.exists(logs_path):
         try:
+            time.sleep(0.1)  # Ensures logs are fully written before reading
             df_logs = pd.read_csv(logs_path)
-            logs = df_logs.tail(10).to_dict('records')  # Get the last 10 logs
+
+            # Ensure logs have correct structure
+            required_columns = {"row_index", "column", "prompt", "best_answer", "explanation"}
+            if required_columns.issubset(df_logs.columns):
+                logs = df_logs.tail(10).to_dict('records')
+            else:
+                logs = [{"error": "Log format incorrect. Missing columns."}]
         except Exception as e:
             logs = [{"error": f"Failed to read logs: {str(e)}"}]
 
@@ -173,7 +218,6 @@ def tagging_progress_view(request):
         "status": progress_data["status"],
         "logs": logs
     })
-
 def results_view(request):
     """ Screen 4: Download the tagged CSV & logs """
     session_key = request.session.get('tagging_session_key')

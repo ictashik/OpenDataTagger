@@ -102,6 +102,8 @@ PROGRESS_STATUS = {}
 
 import pandas as pd
 import os
+import pandas as pd
+import os
 
 def row_by_row_tagger(session_key, csv_path, config_path, input_columns, output_definitions):
     """
@@ -135,15 +137,9 @@ def row_by_row_tagger(session_key, csv_path, config_path, input_columns, output_
         You are an AI Tagger app. The user has provided a CSV file with {len(df.columns)} columns and {total_rows} rows.
         These are the column names: {', '.join(df.columns)}.
         You will now evaluate each row and infer values based on the given prompt.
-        
-        IMPORTANT: 
-        - Provide your answer in the following strict format:
-          Best Answer: <one-line answer>
-          Explanation: <brief explanation>
         """
 
         # Iterate through rows for tagging
-        logs = []
         for i in range(total_rows):
             row = df.loc[i]
 
@@ -184,10 +180,12 @@ def row_by_row_tagger(session_key, csv_path, config_path, input_columns, output_
                     "best_answer": best_answer,
                     "explanation": explanation
                 }
-                logs.append(log_entry)
 
-                # 🔹 Immediately write log entry to file
+                # 🔹 Immediately write log entry to file (append mode) & FLUSH
                 pd.DataFrame([log_entry]).to_csv(logs_path, mode='a', header=False, index=False)
+                
+                # 🔹 Force write to disk to ensure immediate availability
+                os.fsync(os.open(logs_path, os.O_RDWR))
 
             # Update progress
             PROGRESS_STATUS[session_key]["done"] = i + 1
@@ -204,7 +202,7 @@ def row_by_row_tagger(session_key, csv_path, config_path, input_columns, output_
     except Exception as e:
         PROGRESS_STATUS[session_key]["status"] = "error"
         print(f"Tagging Error: {e}")
-
+        
 def dummy_llm_call(prompt):
     """Fake LLM call for demonstration."""
     # In reality, you'd call your local LLM here.
