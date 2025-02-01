@@ -5,7 +5,20 @@
     <title>Tagging Results</title>
 </head>
 <body>
-    <h1>Tagging Complete</h1>
-    <p>Placeholder for download links (tagged file & logs).</p>
+<h1>Tagging Complete</h1>
+
+{% if tagged_file %}
+  <p><a href="/{{ tagged_file }}" download>Download Tagged CSV</a></p>
+{% else %}
+  <p>No tagged file available.</p>
+{% endif %}
+
+{% if logs_file %}
+  <p><a href="/{{ logs_file }}" download>Download Logs CSV</a></p>
+{% else %}
+  <p>No logs file available.</p>
+{% endif %}
+
+<p><a href="/">Start Over</a></p>
 </body>
 </html>

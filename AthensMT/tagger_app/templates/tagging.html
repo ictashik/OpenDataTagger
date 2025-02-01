@@ -5,7 +5,45 @@
     <title>Tagging Progress</title>
 </head>
 <body>
-    <h1>Tagging In Progress...</h1>
-    <p>Placeholder for real-time progress bar or updates.</p>
+<h1>Tagging In Progress...</h1>
+<p id="progress-info"></p>
+
+<script>
+    function checkProgress() {
+        fetch('/tagging/progress/')
+            .then(response => response.json())
+            .then(data => {
+                if (data.error) {
+                    document.getElementById('progress-info').innerHTML = data.error;
+                    return;
+                }
+
+                let done = data.done;
+                let total = data.total;
+                let status = data.status;
+
+                document.getElementById('progress-info').innerHTML = 
+                    `Processed ${done} of ${total} rows... [${status}]`;
+
+                // If finished, redirect to results
+                if (status === "finished") {
+                    window.location.href = "/results/";
+                } else if (status === "error") {
+                    document.getElementById('progress-info').innerHTML += 
+                        "<br>An error occurred during tagging.";
+                } else {
+                    // Keep polling
+                    setTimeout(checkProgress, 1000);
+                }
+            })
+            .catch(err => {
+                console.log("Error fetching progress", err);
+                setTimeout(checkProgress, 2000);
+            });
+    }
+
+    // Start polling after page loads
+    checkProgress();
+</script>
 </body>
 </html>
