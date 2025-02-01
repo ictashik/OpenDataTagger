@@ -100,6 +100,9 @@ PROGRESS_STATUS = {}
 #     "logs_file": "..."
 # }
 
+import pandas as pd
+import os
+
 def row_by_row_tagger(session_key, csv_path, config_path, input_columns, output_definitions):
     """
     Runs in a separate thread:
@@ -119,8 +122,13 @@ def row_by_row_tagger(session_key, csv_path, config_path, input_columns, output_
             "logs_file": ""
         }
 
-        # Prepare logs
-        logs = []
+        # Set up logs file path
+        base, ext = os.path.splitext(csv_path)
+        logs_path = base + "_logs.csv"
+
+        # Create an empty log file if it doesn't exist
+        if not os.path.exists(logs_path):
+            pd.DataFrame(columns=["row_index", "column", "prompt", "best_answer", "explanation"]).to_csv(logs_path, index=False)
 
         # Construct base system prompt
         system_prompt = f"""
@@ -135,6 +143,7 @@ def row_by_row_tagger(session_key, csv_path, config_path, input_columns, output_
         """
 
         # Iterate through rows for tagging
+        logs = []
         for i in range(total_rows):
             row = df.loc[i]
 
@@ -168,25 +177,24 @@ def row_by_row_tagger(session_key, csv_path, config_path, input_columns, output_
                 df.at[i, out_col] = best_answer
 
                 # Save log entry (for _logs.csv)
-                logs.append({
+                log_entry = {
                     "row_index": i,
                     "column": out_col,
                     "prompt": user_prompt,
                     "best_answer": best_answer,
                     "explanation": explanation
-                })
+                }
+                logs.append(log_entry)
+
+                # 🔹 Immediately write log entry to file
+                pd.DataFrame([log_entry]).to_csv(logs_path, mode='a', header=False, index=False)
 
             # Update progress
             PROGRESS_STATUS[session_key]["done"] = i + 1
 
         # Save the tagged CSV
-        base, ext = os.path.splitext(csv_path)
         tagged_path = base + "_tagged.csv"
         df.to_csv(tagged_path, index=False)
-
-        # Save logs CSV
-        logs_path = base + "_logs.csv"
-        pd.DataFrame(logs).to_csv(logs_path, index=False)
 
         # Update status
         PROGRESS_STATUS[session_key]["status"] = "finished"
@@ -196,6 +204,7 @@ def row_by_row_tagger(session_key, csv_path, config_path, input_columns, output_
     except Exception as e:
         PROGRESS_STATUS[session_key]["status"] = "error"
         print(f"Tagging Error: {e}")
+
 def dummy_llm_call(prompt):
     """Fake LLM call for demonstration."""
     # In reality, you'd call your local LLM here.
