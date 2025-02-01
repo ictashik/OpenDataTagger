@@ -218,24 +218,40 @@ def tagging_progress_view(request):
         "status": progress_data["status"],
         "logs": logs
     })
-def results_view(request):
-    """ Screen 4: Download the tagged CSV & logs """
-    session_key = request.session.get('tagging_session_key')
-    if not session_key or session_key not in PROGRESS_STATUS:
-        return render(request, 'results.html', {
-            'tagged_file': None,
-            'logs_file': None,
-        })
+from django.shortcuts import render, redirect
+from django.conf import settings
+import pandas as pd
+import os
 
-    data = PROGRESS_STATUS[session_key]
-    if data["status"] != "finished":
-        # Not finished or error
-        return render(request, 'results.html', {
-            'tagged_file': None,
-            'logs_file': None,
-        })
+def results_view(request):
+    """Screen 4: Show tagged CSV results + logs + download options"""
+    
+    # Debug: Print session contents
+    print("DEBUG: Session Data:", dict(request.session))
+
+    # Retrieve paths from session
+    tagged_file = request.session.get('tagged_file')
+    logs_file = request.session.get('logs_file')
+
+    if not tagged_file or not os.path.exists(tagged_file):
+        print("🚨 Error: Tagged file not found in session!")
+        return redirect('tagging')
+
+    # Load first 10 rows for preview
+    df = pd.read_csv(tagged_file)
+    table_columns = df.columns.tolist()
+    table_data = df.head(10).values.tolist()
+
+    # Generate proper URLs for download
+    tagged_file_url = settings.MEDIA_URL + os.path.basename(tagged_file) if os.path.exists(tagged_file) else None
+    logs_file_url = settings.MEDIA_URL + os.path.basename(logs_file) if logs_file and os.path.exists(logs_file) else None
+
+    print("DEBUG: Generated Tagged File URL:", tagged_file_url)
+    print("DEBUG: Generated Logs File URL:", logs_file_url)
 
     return render(request, 'results.html', {
-        'tagged_file': data["tagged_file"],
-        'logs_file': data["logs_file"],
+        "tagged_file_url": tagged_file_url,
+        "logs_file_url": logs_file_url,
+        "table_columns": table_columns,
+        "table_data": table_data
     })

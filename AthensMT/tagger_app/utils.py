@@ -105,12 +105,13 @@ import os
 import pandas as pd
 import os
 
+from django.contrib.sessions.backends.db import SessionStore
 def row_by_row_tagger(session_key, csv_path, config_path, input_columns, output_definitions):
     """
     Runs in a separate thread:
     1) Reads the CSV
-    2) For each row, applies prompts and writes results
-    3) Calls LLM for tagging (gets both Best Answer & Explanation)
+    2) Applies prompts & writes results
+    3) Calls LLM for tagging (Best Answer & Explanation)
     4) Saves the final tagged CSV and logs
     """
     try:
@@ -124,22 +125,25 @@ def row_by_row_tagger(session_key, csv_path, config_path, input_columns, output_
             "logs_file": ""
         }
 
-        # Set up logs file path
+        # Define paths for tagged CSV & logs
         base, ext = os.path.splitext(csv_path)
         logs_path = base + "_logs.csv"
+        tagged_path = base + "_tagged.csv"
 
-        # Create an empty log file if it doesn't exist
+        # Create empty log file if not exists
         if not os.path.exists(logs_path):
             pd.DataFrame(columns=["row_index", "column", "prompt", "best_answer", "explanation"]).to_csv(logs_path, index=False)
 
-        # Construct base system prompt
+        # 🔹 Define SYSTEM PROMPT (Global Instruction for LLM)
         system_prompt = f"""
-        You are an AI Tagger app. The user has provided a CSV file with {len(df.columns)} columns and {total_rows} rows.
-        These are the column names: {', '.join(df.columns)}.
-        You will now evaluate each row and infer values based on the given prompt.
+        You are an AI-powered CSV Tagger.
+        The user has uploaded a CSV file containing {len(df.columns)} columns and {total_rows} rows.
+        The columns are: {', '.join(df.columns)}.
+        Your job is to analyze the data row by row and infer values based on user-defined prompts.
+        Always return answers in the expected format.
         """
 
-        # Iterate through rows for tagging
+        # Process rows for tagging
         for i in range(total_rows):
             row = df.loc[i]
 
@@ -147,16 +151,14 @@ def row_by_row_tagger(session_key, csv_path, config_path, input_columns, output_
                 out_col = definition['OutputColumn']
                 prompt_template = definition['PromptTemplate']
 
-                # Ensure column exists in dataframe
                 if out_col not in df.columns:
                     df[out_col] = ""
 
-                # Construct the row-specific user prompt
+                # Construct user-specific prompt
                 user_prompt = f"""
                 You are analyzing row {i+1}/{total_rows}.
                 Here is the row data:
                 {row.to_dict()}
-                
                 Your task is to predict the value for the column **{out_col}**.
                 The user-defined prompt is:
                 "{prompt_template}"
@@ -166,13 +168,13 @@ def row_by_row_tagger(session_key, csv_path, config_path, input_columns, output_
                 Explanation: <why you chose this answer>
                 """
 
-                # Call LLM API
+                # 🔹 Call LLM API with BOTH system & user prompts
                 best_answer, explanation = call_llm_tagging(system_prompt, user_prompt)
 
-                # Save the best answer in the DataFrame (for _tagged.csv)
+                # Store in dataframe
                 df.at[i, out_col] = best_answer
 
-                # Save log entry (for _logs.csv)
+                # Log the result
                 log_entry = {
                     "row_index": i,
                     "column": out_col,
@@ -180,29 +182,28 @@ def row_by_row_tagger(session_key, csv_path, config_path, input_columns, output_
                     "best_answer": best_answer,
                     "explanation": explanation
                 }
-
-                # 🔹 Immediately write log entry to file (append mode) & FLUSH
                 pd.DataFrame([log_entry]).to_csv(logs_path, mode='a', header=False, index=False)
-                
-                # 🔹 Force write to disk to ensure immediate availability
-                os.fsync(os.open(logs_path, os.O_RDWR))
 
-            # Update progress
             PROGRESS_STATUS[session_key]["done"] = i + 1
 
         # Save the tagged CSV
-        tagged_path = base + "_tagged.csv"
         df.to_csv(tagged_path, index=False)
 
-        # Update status
+        # Update progress status
         PROGRESS_STATUS[session_key]["status"] = "finished"
         PROGRESS_STATUS[session_key]["tagged_file"] = tagged_path
         PROGRESS_STATUS[session_key]["logs_file"] = logs_path
 
+        # 🔹 Save paths in session
+        from django.contrib.sessions.backends.db import SessionStore
+        session = SessionStore(session_key=session_key)
+        session['tagged_file'] = tagged_path
+        session['logs_file'] = logs_path
+        session.save()
+
     except Exception as e:
         PROGRESS_STATUS[session_key]["status"] = "error"
         print(f"Tagging Error: {e}")
-        
 def dummy_llm_call(prompt):
     """Fake LLM call for demonstration."""
     # In reality, you'd call your local LLM here.
