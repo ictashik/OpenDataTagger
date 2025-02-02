@@ -23,7 +23,7 @@ LLM_CACHE_KEYS = {
 }
 
 client = openai.OpenAI(
-    base_url='http://10.20.110.114:11434/v1',
+    base_url='http://localhost:6000/v1',
     api_key='ollama'  # Required, but unused
 )
 
