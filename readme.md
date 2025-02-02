@@ -1,96 +1,93 @@
 # OpenDataTagger
 
-OpenDataTagger is an **AI-powered CSV tagging tool** built with Django. It allows users to upload CSV files, configure custom tagging prompts, and process data row-by-row using a local LLM (Llama3). The application provides real-time progress updates, logs detailed AI responses, and makes the final tagged CSV available for download—all through a clean, responsive UI powered by Tailwind CSS.
+OpenDataTagger is an **AI-powered CSV tagging tool** built with Django. It allows users to upload CSV files, configure custom tagging prompts, and process data row-by-row using a local LLM (Llama3). The application provides real-time progress updates, detailed logs, and downloadable results—all wrapped in a modern, responsive UI powered by Tailwind CSS.
 
 ## Features
 
-- **CSV Upload & Configuration**: Upload your dataset along with an optional configuration CSV that pre-defines tagging prompts.
-- **Custom Column Definition**: Select input columns and define output columns along with custom AI prompt templates.
-- **Background Processing**: Tagging is performed in a background thread so that users can monitor progress in real time.
-- **Real-Time Progress & Logs**: View live updates and logs for each processed row, including the AI’s best answer and explanation.
-- **Downloadable Results**: Once tagging is complete, download both the tagged CSV file and a detailed log file.
-- **Local LLM Integration**: Leverage a locally hosted LLM (configured with Llama3) via an OpenAI-like API for generating AI-powered tags.
-- **Modern UI**: A responsive interface built with Tailwind CSS, complete with a sidebar for easy navigation.
+- **CSV Upload & Configuration:**  
+  Upload a CSV file along with an optional configuration file that pre-defines tagging prompts.
+
+- **Custom Column Definition:**  
+  Select input columns and define output columns with custom AI prompt templates.
+
+- **Background Tagging Process:**  
+  The tagging process runs in a background thread, allowing you to monitor progress in real time.
+
+- **Real-Time Progress & Logging:**  
+  Get live updates and view detailed logs of AI responses (including the best answer and explanations) for each processed row.
+
+- **Downloadable Results:**  
+  Once tagging is complete, preview and download both the tagged CSV file and the detailed logs.
+
+- **Local LLM Integration:**  
+  Uses a locally hosted LLM (configured as Llama3) via an OpenAI-like API for generating tagging results.
+
+- **Responsive UI:**  
+  Clean and responsive interface built with Tailwind CSS and featuring a sidebar for easy navigation.
 
 ## Prerequisites
 
 - **Python 3.8+**
 - **Django 5.0.1** (or later)
 - **Pandas**
-- **OpenAI Python Library** (or a client compatible with your local LLM)
-- A local LLM server running at `http://localhost:6000/v1` (configured to work with Llama3)
+- **OpenAI Python Library**
+- A local LLM server running at `http://localhost:6000/v1` (configured for Llama3)
 
 ## Installation
 
 1. **Clone the Repository:**
 
-    ```bash
-    git clone https://github.com/yourusername/ictashik-opendatatagger.git
-    cd ictashik-opendatatagger.git
-    ```
+   ```bash
+   git clone https://github.com/yourusername/ictashik-opendatatagger.git
+   cd ictashik-opendatatagger.git
 
-2. **Create a Virtual Environment & Activate It:**
+	2.	Create a Virtual Environment & Activate It:
 
-    ```bash
-    python3 -m venv venv
-    source venv/bin/activate  # Windows: venv\Scripts\activate
-    ```
+python3 -m venv venv
+source venv/bin/activate  # Windows: venv\Scripts\activate
 
-3. **Install Dependencies:**
 
-    If a `requirements.txt` is provided, run:
+	3.	Install Dependencies:
+If you have a requirements.txt:
 
-    ```bash
-    pip install -r requirements.txt
-    ```
+pip install -r requirements.txt
 
-    Otherwise, install manually:
+Otherwise, install manually:
 
-    ```bash
-    pip install Django==5.0.1 pandas openai
-    ```
+pip install Django==5.0.1 pandas openai
 
-4. **Apply Migrations:**
 
-    ```bash
-    python AthensMT/manage.py migrate
-    ```
+	4.	Apply Migrations:
 
-5. **Start the Development Server:**
+python AthensMT/manage.py migrate
 
-    ```bash
-    python AthensMT/manage.py runserver
-    ```
 
-6. **Access the Application:**
+	5.	Start the Development Server:
 
-    Open your browser and navigate to:  
-    [http://localhost:8000/ODT/](http://localhost:8000/ODT/)  
-    (Note: The base URL is defined as `/ODT/` in the settings and URLs.)
+python AthensMT/manage.py runserver
 
-## Usage
 
-1. **Upload CSV File:**
-   - Navigate to the **Upload CSV** page.
-   - Choose your main CSV file and, optionally, a configuration CSV.
-   - Click **Upload & Continue**.
+	6.	Access the Application:
+Open your browser and navigate to http://localhost:8000/ODT/.
 
-2. **Define Columns & Prompts:**
-   - On the **Define Input & Output Columns** page, select the input columns from your CSV.
-   - Define one or more output columns and specify corresponding prompt templates.
-   - Click **Save & Continue**.
-
-3. **Start Tagging:**
-   - The tagging process will begin in the background.  
-   - Monitor progress and view live logs on the **Tagging** page.
-
-4. **View & Download Results:**
-   - Once the process is complete, navigate to the **Results** page.
-   - Preview the tagged CSV and download the tagged file along with detailed logs.
+Usage
+	1.	Upload CSV File:
+	•	Navigate to the Upload CSV page.
+	•	Upload your main CSV file and, optionally, a configuration CSV file.
+	•	Click Upload & Continue.
+	2.	Define Columns & Prompts:
+	•	On the Define Input & Output Columns page, select the input columns from your CSV.
+	•	Define one or more output columns and specify corresponding prompt templates.
+	•	Click Save & Continue.
+	3.	Tagging Process:
+	•	The tagging process starts in the background.
+	•	Monitor the real-time progress and view detailed logs on the Tagging page.
+	4.	View & Download Results:
+	•	Once tagging is complete, navigate to the Results page.
+	•	Preview the tagged CSV file and download both the tagged file and the logs.
 
 ## Project Structure
 
-```plaintext
 ictashik-opendatatagger.git/
 ├── inint.t
 └── AthensMT/
@@ -120,27 +117,28 @@ ictashik-opendatatagger.git/
             ├── results.html
             ├── tagging.html
             └── upload.html
-            ```
-    Configuration
-        •	Django Settings:
-    The project settings are managed in AthensMT/AthensMT/settings.py. Be sure to update ALLOWED_HOSTS, DEBUG, and other deployment settings as needed.
-        •	Media Files:
-    Uploaded CSV files and generated outputs (tagged CSV and logs) are stored in the media/ directory.
-        •	LLM Integration:
-    The integration with the local LLM is implemented in tagger_app/utils.py using an OpenAI-like client. Update the LLM_MODEL_NAME, API endpoint, or API key in this file to match your LLM server configuration.
-        •	Caching:
-    Django’s LocMemCache is used to track real-time LLM usage statistics and the progress of the tagging process.
 
-    Contributing
+## Configuration
+	•	Django Settings:
+All configurations are managed in AthensMT/AthensMT/settings.py. Be sure to update the ALLOWED_HOSTS, DEBUG, and other settings for your deployment environment.
+	•	Media Files:
+Uploaded CSV files and generated outputs (tagged CSV and logs) are stored in the media/ directory.
+	•	LLM Integration:
+The integration with the local LLM is implemented in tagger_app/utils.py using an OpenAI-like client. Update LLM_MODEL_NAME, the API endpoint, or API key as necessary.
+	•	Caching:
+Django’s LocMemCache is used for tracking real-time LLM usage statistics and the progress of the tagging process.
 
-    Contributions are welcome! If you have suggestions, bug reports, or improvements, please open an issue or submit a pull request.
+## Contributing
 
-    License
+Contributions are welcome! Please feel free to open issues or submit pull requests with improvements or bug fixes.
 
-    This project is open source. [Include your license information here if applicable.]
+## License
 
-    Acknowledgments
-        •	Django
-        •	Tailwind CSS
-        •	OpenAI API
-        •	Many thanks to all contributors and the open source community for their support and inspiration.
+This project is open source. Include your license information here if applicable.
+
+## Acknowledgments
+	•	Django
+	•	Tailwind CSS
+	•	OpenAI API
+    •	Ollama
+	•	Thanks to all contributors and the open source community for their support.
