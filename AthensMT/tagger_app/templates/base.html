@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AthensMT - AI Tagger</title>
+    <title>ODT</title>
     
     <!-- Tailwind CSS (shadcn-like UI) -->
     <script src="https://cdn.tailwindcss.com"></script>
@@ -24,8 +24,8 @@
     <!-- Sidebar -->
     <div class="fixed w-64 h-screen bg-gray-800 text-white p-5 flex flex-col justify-between">
         <div>
-            <h1 class="text-2xl font-semibold mb-3">AthensMT</h1>
-            <p class="text-gray-400">AI-powered Data Tagger</p>
+            <h1 class="text-2xl font-semibold mb-3">Athena ODT</h1>
+            <p class="text-gray-400">Open Data Tagger</p>
             <nav class="mt-6 space-y-2">
                 <a href="/" class="block px-4 py-2 rounded-md bg-gray-700 hover:bg-gray-600">Upload CSV</a>
                 <a href="/define-columns/" class="block px-4 py-2 rounded-md bg-gray-700 hover:bg-gray-600">Define Columns</a>
@@ -38,6 +38,7 @@
         <div class="p-4 bg-gray-900 rounded-lg text-gray-300">
             <h5 class="text-lg font-medium text-white">LLM Status</h5>
             <p class="text-sm">Model: <span id="llm-model">N/A</span></p>
+            <!-- <p class="text-sm">Server: <span id="llm-server">Athens [10.20.110.114]</span></p> -->
             <p class="text-sm">Requests: <span id="llm-requests">0</span></p>
             <p class="text-sm">Total Time: <span id="llm-total-time">0 sec</span></p>
             <p class="text-sm">Avg Speed: <span id="llm-speed">0 sec/request</span></p>
