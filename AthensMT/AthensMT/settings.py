@@ -32,8 +32,15 @@ SECRET_KEY = 'django-insecure-l4j5m755uogq)6t#!ck05wv6k4(-e9@cbe(9zllq)5f19@a=n#
 DEBUG = True
 
 BASE_URL = "/ODT/"  # You can change this later if needed
-ALLOWED_HOSTS = ['*']
-
+ALLOWED_HOSTS = [
+    "datatools.sjri.res.in",
+    "localhost",
+    "127.0.0.1"
+]
+CSRF_TRUSTED_ORIGINS = [
+    "https://datatools.sjri.res.in", 
+    "http://datatools.sjri.res.in"  # Add both HTTP & HTTPS
+]
 
 # Application definition
 
@@ -137,3 +144,8 @@ STATIC_URL = 'static/'
 # https://docs.djangoproject.com/en/5.0/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+
+SESSION_ENGINE = "django.contrib.sessions.backends.db"  # Store sessions in DB
+SESSION_COOKIE_AGE = 86400  # 24-hour session expiration
+SESSION_SAVE_EVERY_REQUEST = True  # Save session every time it's modified
