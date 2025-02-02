@@ -19,6 +19,24 @@ from .utils import save_config_file
 from django.core.files.storage import FileSystemStorage
 import os
 
+# tagger_app/views.py
+from django.http import JsonResponse
+from django.core.cache import cache
+from .utils import LLM_MODEL_NAME, LLM_CACHE_KEYS
+
+def llm_status_view(request):
+    """Returns real-time LLM usage statistics."""
+    request_count = cache.get(LLM_CACHE_KEYS["requests"], 0)
+    total_time = cache.get(LLM_CACHE_KEYS["total_time"], 0.0)
+    avg_speed = (total_time / request_count) if request_count > 0 else 0.0
+
+    return JsonResponse({
+        "status": "Connected" if request_count > 0 else "Idle",
+        "model": LLM_MODEL_NAME,
+        "requests": request_count,
+        "total_time": f"{total_time:.2f} sec",
+        "avg_speed": f"{avg_speed:.2f} sec/request"
+    })
 def upload_file_view(request):
     """Handles file upload and ensures consistent naming."""
     if request.method == 'POST':

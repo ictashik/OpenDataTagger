@@ -7,6 +7,7 @@ urlpatterns = [
     path('define-columns/', views.define_columns_view, name='define_columns'),  # Screen 2
     path('tagging/', views.tagging_view, name='tagging'),      # Screen 3
     path('tagging/progress/', views.tagging_progress_view, name='tagging_progress'),  # ✅ FIXED: Add progress route
+    path("llm_status/", views.llm_status_view, name="llm_status"),
 
     path('results/', views.results_view, name='results'),      # Screen 4
 ]

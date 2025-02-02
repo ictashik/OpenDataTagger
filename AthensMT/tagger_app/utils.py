@@ -8,7 +8,20 @@ import openai
 import pandas as pd
 import os
 
-# OpenAI client (connecting to locally hosted Ollama)
+# tagger_app/utils.py
+import openai
+import time
+# tagger_app/utils.py
+import openai
+import time
+from django.core.cache import cache
+
+LLM_MODEL_NAME = "llama3"
+LLM_CACHE_KEYS = {
+    "requests": "llm_request_count",
+    "total_time": "llm_total_inference_time",
+}
+
 client = openai.OpenAI(
     base_url='http://10.20.110.114:11434/v1',
     api_key='ollama'  # Required, but unused
@@ -16,37 +29,42 @@ client = openai.OpenAI(
 
 def call_llm_tagging(system_prompt, user_prompt):
     """
-    Calls Llama and requests a single best answer + explanation.
-    The LLM must return responses in the exact format:
-    
-    Best Answer: <your answer>
-    Explanation: <why you chose this answer>
+    Calls the LLM, tracks request count, and measures response time.
     """
     try:
+        # Increment request count
+        request_count = cache.get(LLM_CACHE_KEYS["requests"], 0) + 1
+        cache.set(LLM_CACHE_KEYS["requests"], request_count, None)  # No expiration
+
+        start_time = time.time()
+
         response = client.chat.completions.create(
-            model="llama3",
+            model=LLM_MODEL_NAME,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ]
         )
 
+        elapsed_time = time.time() - start_time
+
+        # Update total inference time
+        total_time = cache.get(LLM_CACHE_KEYS["total_time"], 0.0) + elapsed_time
+        cache.set(LLM_CACHE_KEYS["total_time"], total_time, None)
+
         message = response.choices[0].message.content.strip()
 
         # Extract best answer & explanation
-        best_answer = ""
-        explanation = ""
-
         if "Best Answer:" in message and "Explanation:" in message:
             parts = message.split("Explanation:")
             best_answer = parts[0].replace("Best Answer:", "").strip()
             explanation = parts[1].strip()
         else:
-            # Fallback in case format is incorrect
             best_answer = message.strip()
             explanation = "No explanation provided."
 
         return best_answer, explanation
+
     except Exception as e:
         print(f"LLM API error: {e}")
         return "ERROR", "LLM call failed."

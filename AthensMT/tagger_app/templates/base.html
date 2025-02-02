@@ -44,6 +44,17 @@
             background: #007bff;
             transition: width 0.3s ease-in-out;
         }
+        .llm-status {
+            font-size: 14px;
+            margin-top: 15px;
+            padding: 10px;
+            background: #282828;
+            border-radius: 5px;
+        }
+        .llm-status span {
+            font-weight: bold;
+            color: #17a2b8;
+        }
     </style>
 </head>
 <body class="light-mode">
@@ -60,6 +71,34 @@
         </nav>
         <hr>
         <button class="btn btn-outline-light w-100 mt-3" onclick="toggleDarkMode()">🌙 </button>
+        
+        <div class="llm-status mt-4">
+            <h5 class="text-white">LLM Status</h5>
+            <p>Model: <span id="llm-model">N/A</span></p>
+            <p>Requests: <span id="llm-requests">0</span></p>
+            <p>Total Time: <span id="llm-total-time">0 sec</span></p>
+            <p>Avg Speed: <span id="llm-speed">0 sec/request</span></p>
+        </div>
+        
+        <script>
+            async function updateLLMStats() {
+                try {
+                    let response = await fetch('/llm_status/');
+                    let data = await response.json();
+        
+                    document.getElementById("llm-model").innerText = data.model;
+                    document.getElementById("llm-requests").innerText = data.requests;
+                    document.getElementById("llm-total-time").innerText = data.total_time;
+                    document.getElementById("llm-speed").innerText = data.avg_speed;
+        
+                } catch (error) {
+                    console.error("Error fetching LLM stats:", error);
+                }
+            }
+        
+            setInterval(updateLLMStats, 5000);
+            updateLLMStats();
+        </script>
     </div>
 
     <!-- Main Content -->
@@ -80,6 +119,8 @@
         if (localStorage.getItem('darkMode') === 'enabled') {
             document.body.classList.add('dark-mode');
         }
+
+       
     </script>
 
 </body>
