@@ -1,29 +1,29 @@
 {% extends "base.html" %}
 
 {% block content %}
-<div class="container mt-5">
-    <h1 class="text-primary">Upload CSV File</h1>
-    <p class="text-muted">Please upload your dataset for tagging.</p>
+<div class="flex justify-center items-center min-h-screen">
+    <div class="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-lg w-full max-w-lg">
+        <h1 class="text-2xl font-semibold text-gray-900 dark:text-gray-100">Upload CSV File</h1>
+        <p class="text-gray-600 dark:text-gray-400 mb-4">Upload your dataset for AI tagging.</p>
 
-    <div class="card p-4 mt-3 shadow">
-        <form method="post" enctype="multipart/form-data" class="needs-validation">
+        <form method="post" enctype="multipart/form-data" class="space-y-4">
             {% csrf_token %}
             
             <!-- CSV File Input -->
-            <div class="mb-3">
-                <label class="form-label fw-bold">Upload CSV File</label>
-                <input type="file" name="csv_file" class="form-control" accept=".csv" required>
+            <div>
+                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300">Upload CSV File</label>
+                <input type="file" name="csv_file" class="mt-1 block w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg shadow-sm focus:ring-indigo-500 focus:border-indigo-500 dark:bg-gray-900 dark:text-gray-200" accept=".csv" required>
             </div>
 
             <!-- Optional Config File -->
-            <div class="mb-3">
-                <label class="form-label">Upload Config File (Optional)</label>
-                <input type="file" name="config_file" class="form-control" accept=".csv">
-                <small class="text-muted">You can upload a pre-existing config file for automated tagging settings.</small>
+            <div>
+                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300">Upload Config File (Optional)</label>
+                <input type="file" name="config_file" class="mt-1 block w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg shadow-sm focus:ring-indigo-500 focus:border-indigo-500 dark:bg-gray-900 dark:text-gray-200" accept=".csv">
+                <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Upload a pre-configured file for automated tagging settings.</p>
             </div>
 
             <!-- Submit Button -->
-            <button type="submit" class="btn btn-primary w-100">Upload & Continue</button>
+            <button type="submit" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2 px-4 rounded-lg shadow-md transition">Upload & Continue</button>
         </form>
     </div>
 </div>

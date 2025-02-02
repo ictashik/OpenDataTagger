@@ -1,47 +1,46 @@
 {% extends "base.html" %}
 
 {% block content %}
-<div class="container mt-5">
-    <h1 class="text-primary">Define Input & Output Columns</h1>
-    <p class="text-muted">Select input columns and define how AI should generate outputs.</p>
+<div class="flex justify-center items-center min-h-screen">
+    <div class="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-lg w-full max-w-2xl">
+        <h1 class="text-2xl font-semibold text-gray-900 dark:text-gray-100">Define Input & Output Columns</h1>
+        <p class="text-gray-600 dark:text-gray-400 mb-4">Select input columns and define how AI should generate outputs.</p>
 
-    <div class="card p-4 mt-3 shadow">
-        <form method="post">
+        <form method="post" class="space-y-4">
             {% csrf_token %}
 
             <!-- Input Columns Section -->
-            <h4 class="mb-3 text-info">Select Input Columns</h4>
-            {% for column in columns %}
-                <div class="form-check">
-                    <input class="form-check-input" type="checkbox" name="input_columns" value="{{ column }}" 
-                           id="input_{{ column }}" {% if column in request.session.input_columns %}checked{% endif %}>
-                    <label class="form-check-label" for="input_{{ column }}">
-                        {{ column }}
-                    </label>
-                </div>
-            {% endfor %}
+            <h4 class="text-lg font-medium text-gray-700 dark:text-gray-300">Select Input Columns</h4>
+            <div class="space-y-2">
+                {% for column in columns %}
+                    <div class="flex items-center space-x-2">
+                        <input type="checkbox" name="input_columns" value="{{ column }}" id="input_{{ column }}" 
+                               class="w-4 h-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500 dark:bg-gray-900"
+                               {% if column in request.session.input_columns %}checked{% endif %}>
+                        <label for="input_{{ column }}" class="text-gray-700 dark:text-gray-300">{{ column }}</label>
+                    </div>
+                {% endfor %}
+            </div>
 
-            <hr>
+            <hr class="border-gray-300 dark:border-gray-600">
 
             <!-- Output Columns Section -->
-            <h4 class="mb-3 text-warning">Define Output Columns & Prompts</h4>
-            <div id="output-column-container">
+            <h4 class="text-lg font-medium text-gray-700 dark:text-gray-300">Define Output Columns & Prompts</h4>
+            <div id="output-column-container" class="space-y-3">
                 {% for entry in config_data %}
-                    <div class="output-column mb-3">
-                        <div class="input-group">
-                            <input type="text" name="output_column" class="form-control" value="{{ entry.OutputColumn }}" placeholder="Column Name" required>
-                            <input type="text" name="prompt_template" class="form-control" value="{{ entry.PromptTemplate }}" placeholder="Prompt (e.g., Check if food is veg or non-veg)" required>
-                            <button type="button" class="btn btn-danger remove-column">X</button>
-                        </div>
+                    <div class="output-column flex space-x-2">
+                        <input type="text" name="output_column" class="flex-1 px-4 py-2 border rounded-lg dark:bg-gray-900 dark:border-gray-600" value="{{ entry.OutputColumn }}" placeholder="Column Name" required>
+                        <input type="text" name="prompt_template" class="flex-1 px-4 py-2 border rounded-lg dark:bg-gray-900 dark:border-gray-600" value="{{ entry.PromptTemplate }}" placeholder="Prompt (e.g., Check if food is veg or non-veg)" required>
+                        <button type="button" class="px-3 py-2 text-white bg-red-500 rounded-lg remove-column">X</button>
                     </div>
                 {% endfor %}
             </div>
 
             <!-- Add Output Column Button -->
-            <button type="button" class="btn btn-outline-success w-100 mt-3" id="add-output-column">+ Add Output Column</button>
+            <button type="button" id="add-output-column" class="w-full bg-green-600 hover:bg-green-700 text-white font-semibold py-2 px-4 rounded-lg shadow-md transition">+ Add Output Column</button>
 
             <!-- Submit Button -->
-            <button type="submit" class="btn btn-primary w-100 mt-4">Save & Continue</button>
+            <button type="submit" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2 px-4 rounded-lg shadow-md transition mt-3">Save & Continue</button>
         </form>
     </div>
 </div>
@@ -50,13 +49,11 @@
     document.getElementById("add-output-column").addEventListener("click", function () {
         let container = document.getElementById("output-column-container");
         let newField = document.createElement("div");
-        newField.classList.add("output-column", "mb-3");
+        newField.classList.add("output-column", "flex", "space-x-2", "mt-3");
         newField.innerHTML = `
-            <div class="input-group">
-                <input type="text" name="output_column" class="form-control" placeholder="Column Name" required>
-                <input type="text" name="prompt_template" class="form-control" placeholder="Prompt (e.g., Check if food is veg or non-veg)" required>
-                <button type="button" class="btn btn-danger remove-column">X</button>
-            </div>
+            <input type="text" name="output_column" class="flex-1 px-4 py-2 border rounded-lg dark:bg-gray-900 dark:border-gray-600" placeholder="Column Name" required>
+            <input type="text" name="prompt_template" class="flex-1 px-4 py-2 border rounded-lg dark:bg-gray-900 dark:border-gray-600" placeholder="Prompt (e.g., Check if food is veg or non-veg)" required>
+            <button type="button" class="px-3 py-2 text-white bg-red-500 rounded-lg remove-column">X</button>
         `;
         container.appendChild(newField);
 
@@ -68,7 +65,7 @@
         let removeButtons = document.querySelectorAll(".remove-column");
         removeButtons.forEach(button => {
             button.onclick = function () {
-                this.parentElement.parentElement.remove();
+                this.parentElement.remove();
             };
         });
     }

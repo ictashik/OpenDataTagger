@@ -1,27 +1,33 @@
 {% extends "base.html" %}
 
 {% block content %}
-<div class="container mt-4">
-    <h1 class="text-primary">Tagging in Progress...</h1>
+<div class="flex flex-col items-center justify-center min-h-screen bg-gray-900 text-white">
+    <div class="w-full max-w-4xl text-center">
+        <h1 class="text-3xl font-bold text-blue-400">AI Tagging in Progress...</h1>
+        <p class="text-gray-400 text-sm mt-2">Analyzing data row by row, generating AI-assisted outputs.</p>
+    </div>
 
     <!-- Progress Bar -->
-    <div class="progress mt-3">
-        <div id="progress-bar" class="progress-bar bg-info" role="progressbar" style="width: 0%;"></div>
+    <div class="w-full max-w-4xl bg-gray-700 rounded-full h-4 mt-5">
+        <div id="progress-bar" class="bg-blue-500 h-4 rounded-full transition-all" style="width: 0%;"></div>
     </div>
-    <p id="progress-info" class="mt-2 text-muted">Starting tagging...</p>
+    <p id="progress-info" class="mt-2 text-gray-300 text-sm">Initializing tagging process...</p>
 
-    <!-- Live Logs -->
-    <h3 class="mt-4 text-secondary">Live Logs</h3>
-    <div id="logs" class="log-container border p-3 text-light bg-dark rounded">
-        <p id="log-placeholder" class="text-muted">Waiting for logs...</p>
+    <!-- Live Logs Full-Width -->
+    <div class="w-full max-w-6xl mt-6">
+        <h3 class="text-lg font-semibold text-gray-300 text-center">Processing Logs</h3>
+        <div id="logs" class="h-96 overflow-y-auto bg-black text-green-400 p-4 rounded-lg border border-gray-700 shadow-xl mt-2 font-mono">
+            <p id="log-placeholder" class="text-gray-500">Awaiting system logs...</p>
+        </div>
     </div>
 </div>
+
 <script>
     function checkProgress() {
         fetch('/tagging/progress/')
             .then(response => response.json())
             .then(data => {
-                console.log("Progress API Response:", data); // Debugging
+                console.log("Progress API Response:", data);
 
                 if (data.error) {
                     document.getElementById('progress-info').innerHTML = data.error;
@@ -38,16 +44,11 @@
                 progressBar.style.width = percentage + "%";
 
                 document.getElementById('progress-info').innerHTML = 
-                    `Processed ${done} of ${total} rows... [${status}]`;
+                    `Processing ${done} of ${total} rows... [${status}]`;
 
-                // Ensure logs container exists
+                // Log Updates
                 let logContainer = document.getElementById('logs');
                 let logPlaceholder = document.getElementById('log-placeholder');
-
-                if (!logContainer) {
-                    console.error("Logs container not found.");
-                    return;
-                }
 
                 if (logPlaceholder) {
                     logPlaceholder.style.display = data.logs.length === 0 ? "block" : "none";
@@ -57,12 +58,12 @@
 
                 data.logs.forEach(log => {
                     let logEntry = document.createElement('div');
-                    logEntry.classList.add("log-entry", "p-2", "border-bottom", "border-secondary");
+                    logEntry.classList.add("p-2", "border-b", "border-gray-700");
                     logEntry.innerHTML = `
-                        <span class="text-warning font-weight-bold">Row ${log.row_index}, ${log.column}</span><br>
-                        <span class="text-light"><strong>Prompt:</strong> ${log.prompt}</span><br>
-                        <span class="text-success"><strong>Best Answer:</strong> ${log.best_answer}</span><br>
-                        <span class="text-info"><em>Explanation:</em> ${log.explanation}</span>
+                        <span class="text-yellow-300 font-bold">[Row ${log.row_index}] ${log.column}</span><br>
+                        <span class="text-gray-400"><strong>Prompt:</strong> ${log.prompt}</span><br>
+                        <span class="text-green-400"><strong>Best Answer:</strong> ${log.best_answer}</span><br>
+                        <span class="text-blue-400"><em>Explanation:</em> ${log.explanation}</span>
                     `;
                     logContainer.appendChild(logEntry);
                 });
@@ -84,7 +85,6 @@
             });
     }
 
-    // Start polling after page loads
     document.addEventListener("DOMContentLoaded", checkProgress);
 </script>
 {% endblock %}

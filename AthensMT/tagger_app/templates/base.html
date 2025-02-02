@@ -5,109 +5,49 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AthensMT - AI Tagger</title>
     
-    <!-- Bootstrap 5 (CDN) -->
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- Tailwind CSS (shadcn-like UI) -->
+    <script src="https://cdn.tailwindcss.com"></script>
     
-    <!-- Custom Styles -->
     <style>
         body {
-            font-family: 'Arial', sans-serif;
+            font-family: 'Inter', sans-serif;
             transition: background-color 0.3s, color 0.3s;
         }
         .dark-mode {
             background-color: #121212;
             color: #e0e0e0;
         }
-        .sidebar {
-            width: 250px;
-            height: 100vh;
-            background-color: #1E1E1E;
-            position: fixed;
-            padding: 20px;
-            color: white;
-        }
-        .main-content {
-            margin-left: 270px;
-            padding: 20px;
-        }
-        .log-container {
-            max-height: 300px;
-            overflow-y: auto;
-            background: black;
-            padding: 10px;
-            border-radius: 5px;
-            font-family: monospace;
-            font-size: 14px;
-        }
-        .progress-bar {
-            height: 6px;
-            background: #007bff;
-            transition: width 0.3s ease-in-out;
-        }
-        .llm-status {
-            font-size: 14px;
-            margin-top: 15px;
-            padding: 10px;
-            background: #282828;
-            border-radius: 5px;
-        }
-        .llm-status span {
-            font-weight: bold;
-            color: #17a2b8;
-        }
     </style>
 </head>
-<body class="light-mode">
-
+<body class="bg-gray-100 dark:bg-gray-900 text-gray-900 dark:text-gray-200">
+    
     <!-- Sidebar -->
-    <div class="sidebar">
-        <h1 class="text-white">AthensMT</h1>
-        <p class="text" style="color: aliceblue;">AI-powered Data Tagger</p>
-        <nav class="mt-4">
-            <a href="/" class="btn btn-secondary btn-sm d-block mb-2">Upload CSV</a>
-            <a href="/define-columns/" class="btn btn-secondary btn-sm d-block mb-2">Define Columns</a>
-            <a href="/tagging/" class="btn btn-secondary btn-sm d-block mb-2">Tagging</a>
-            <a href="/results/" class="btn btn-secondary btn-sm d-block">Results</a>
-        </nav>
-        <hr>
-        <button class="btn btn-outline-light w-100 mt-3" onclick="toggleDarkMode()">🌙 </button>
-        
-        <div class="llm-status mt-4">
-            <h5 class="text-white">LLM Status</h5>
-            <p>Model: <span id="llm-model">N/A</span></p>
-            <p>Requests: <span id="llm-requests">0</span></p>
-            <p>Total Time: <span id="llm-total-time">0 sec</span></p>
-            <p>Avg Speed: <span id="llm-speed">0 sec/request</span></p>
+    <div class="fixed w-64 h-screen bg-gray-800 text-white p-5 flex flex-col justify-between">
+        <div>
+            <h1 class="text-2xl font-semibold mb-3">AthensMT</h1>
+            <p class="text-gray-400">AI-powered Data Tagger</p>
+            <nav class="mt-6 space-y-2">
+                <a href="/" class="block px-4 py-2 rounded-md bg-gray-700 hover:bg-gray-600">Upload CSV</a>
+                <a href="/define-columns/" class="block px-4 py-2 rounded-md bg-gray-700 hover:bg-gray-600">Define Columns</a>
+                <a href="/tagging/" class="block px-4 py-2 rounded-md bg-gray-700 hover:bg-gray-600">Tagging</a>
+                <a href="/results/" class="block px-4 py-2 rounded-md bg-gray-700 hover:bg-gray-600">Results</a>
+            </nav>
         </div>
         
-        <script>
-            async function updateLLMStats() {
-                try {
-                    let response = await fetch('/llm_status/');
-                    let data = await response.json();
-        
-                    document.getElementById("llm-model").innerText = data.model;
-                    document.getElementById("llm-requests").innerText = data.requests;
-                    document.getElementById("llm-total-time").innerText = data.total_time;
-                    document.getElementById("llm-speed").innerText = data.avg_speed;
-        
-                } catch (error) {
-                    console.error("Error fetching LLM stats:", error);
-                }
-            }
-        
-            setInterval(updateLLMStats, 5000);
-            updateLLMStats();
-        </script>
+        <!-- LLM Stats -->
+        <div class="p-4 bg-gray-900 rounded-lg text-gray-300">
+            <h5 class="text-lg font-medium text-white">LLM Status</h5>
+            <p class="text-sm">Model: <span id="llm-model">N/A</span></p>
+            <p class="text-sm">Requests: <span id="llm-requests">0</span></p>
+            <p class="text-sm">Total Time: <span id="llm-total-time">0 sec</span></p>
+            <p class="text-sm">Avg Speed: <span id="llm-speed">0 sec/request</span></p>
+        </div>
     </div>
-
+    
     <!-- Main Content -->
-    <div class="main-content">
+    <div class="ml-64 p-10">
         {% block content %}{% endblock %}
     </div>
-
-    <!-- Bootstrap JS (for interactions) -->
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 
     <script>
         function toggleDarkMode() {
@@ -120,8 +60,24 @@
             document.body.classList.add('dark-mode');
         }
 
-       
-    </script>
+        // Function to fetch and update LLM stats every 2 seconds
+        async function updateLLMStats() {
+            try {
+                let response = await fetch('/llm_status/');
+                let data = await response.json();
+                
+                document.getElementById("llm-model").innerText = data.model;
+                document.getElementById("llm-requests").innerText = data.requests;
+                document.getElementById("llm-total-time").innerText = data.total_time;
+                document.getElementById("llm-speed").innerText = data.avg_speed;
 
+            } catch (error) {
+                console.error("Error fetching LLM stats:", error);
+            }
+        }
+
+        setInterval(updateLLMStats, 2000);
+        updateLLMStats();
+    </script>
 </body>
 </html>
