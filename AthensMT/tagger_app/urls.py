@@ -1,13 +1,14 @@
-# tagger_app/urls.py
+from django.conf import settings
 from django.urls import path
 from . import views
 
-urlpatterns = [
-    path('', views.upload_file_view, name='upload_file'),      # Screen 1
-    path('define-columns/', views.define_columns_view, name='define_columns'),  # Screen 2
-    path('tagging/', views.tagging_view, name='tagging'),      # Screen 3
-    path('tagging/progress/', views.tagging_progress_view, name='tagging_progress'),  # ✅ FIXED: Add progress route
-    path("llm_status/", views.llm_status_view, name="llm_status"),
+BASE_URL = settings.BASE_URL.strip("/")  # Remove trailing slashes if exists
 
-    path('results/', views.results_view, name='results'),      # Screen 4
+urlpatterns = [
+    path(f'{BASE_URL}/', views.upload_file_view, name='upload_file'),
+    path(f'{BASE_URL}/define-columns/', views.define_columns_view, name='define_columns'),
+    path(f'{BASE_URL}/tagging/', views.tagging_view, name='tagging'),
+    path(f'{BASE_URL}/tagging/progress/', views.tagging_progress_view, name='tagging_progress'),
+    path(f"{BASE_URL}/llm_status/", views.llm_status_view, name="llm_status"),
+    path(f'{BASE_URL}/results/', views.results_view, name='results'),
 ]

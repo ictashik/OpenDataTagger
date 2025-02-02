@@ -31,7 +31,8 @@ SECRET_KEY = 'django-insecure-l4j5m755uogq)6t#!ck05wv6k4(-e9@cbe(9zllq)5f19@a=n#
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = []
+BASE_URL = "/ODT/"  # You can change this later if needed
+ALLOWED_HOSTS = ['*']
 
 
 # Application definition

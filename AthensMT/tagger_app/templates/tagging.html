@@ -24,7 +24,7 @@
 
 <script>
     function checkProgress() {
-        fetch('/tagging/progress/')
+        fetch("{% url 'tagging_progress' %}")
             .then(response => response.json())
             .then(data => {
                 console.log("Progress API Response:", data);

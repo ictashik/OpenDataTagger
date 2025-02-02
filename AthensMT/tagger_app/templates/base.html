@@ -27,12 +27,13 @@
             <h1 class="text-2xl font-semibold mb-3">Athena ODT</h1>
             <p class="text-gray-400">Open Data Tagger</p>
             <nav class="mt-6 space-y-2">
-                <a href="/" class="block px-4 py-2 rounded-md bg-gray-700 hover:bg-gray-600">Upload CSV</a>
-                <a href="/define-columns/" class="block px-4 py-2 rounded-md bg-gray-700 hover:bg-gray-600">Define Columns</a>
-                <a href="/tagging/" class="block px-4 py-2 rounded-md bg-gray-700 hover:bg-gray-600">Tagging</a>
-                <a href="/results/" class="block px-4 py-2 rounded-md bg-gray-700 hover:bg-gray-600">Results</a>
+                <a href="{% url 'upload_file' %}" class="block px-4 py-2 rounded-md bg-gray-700 hover:bg-gray-600">Upload CSV</a>
+                <a href="{% url 'define_columns' %}" class="block px-4 py-2 rounded-md bg-gray-700 hover:bg-gray-600">Define Columns</a>
+                <a href="{% url 'tagging' %}" class="block px-4 py-2 rounded-md bg-gray-700 hover:bg-gray-600">Tagging</a>
+                <a href="{% url 'results' %}" class="block px-4 py-2 rounded-md bg-gray-700 hover:bg-gray-600">Results</a>
             </nav>
         </div>
+        
         
         <!-- LLM Stats -->
         <div class="p-4 bg-gray-900 rounded-lg text-gray-300">
@@ -64,7 +65,7 @@
         // Function to fetch and update LLM stats every 2 seconds
         async function updateLLMStats() {
             try {
-                let response = await fetch('/llm_status/');
+                let response = await fetch("{% url 'llm_status' %}");
                 let data = await response.json();
                 
                 document.getElementById("llm-model").innerText = data.model;
