@@ -74,7 +74,7 @@
                 // If finished, redirect to results
                 if (status === "finished") {
                     console.log("Tagging completed. Redirecting to results...");
-                    window.location.href = "/results/";
+                    window.location.href = "{% url 'results' %}";
                 } else {
                     setTimeout(checkProgress, 1000);
                 }

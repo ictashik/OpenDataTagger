@@ -124,6 +124,9 @@ import pandas as pd
 import os
 
 from django.contrib.sessions.backends.db import SessionStore
+
+from django.core.cache import cache
+
 def row_by_row_tagger(session_key, csv_path, config_path, input_columns, output_definitions):
     """
     Runs in a separate thread:
@@ -152,7 +155,7 @@ def row_by_row_tagger(session_key, csv_path, config_path, input_columns, output_
         if not os.path.exists(logs_path):
             pd.DataFrame(columns=["row_index", "column", "prompt", "best_answer", "explanation"]).to_csv(logs_path, index=False)
 
-        # 🔹 Define SYSTEM PROMPT (Global Instruction for LLM)
+        # Define SYSTEM PROMPT
         system_prompt = f"""
         You are an AI-powered CSV Tagger.
         The user has uploaded a CSV file containing {len(df.columns)} columns and {total_rows} rows.
@@ -172,12 +175,10 @@ def row_by_row_tagger(session_key, csv_path, config_path, input_columns, output_
                 if out_col not in df.columns:
                     df[out_col] = ""
 
-                # Construct user-specific prompt
                 user_prompt = f"""
                 You are analyzing row {i+1}/{total_rows}.
                 Here is the row data:
                 {row.to_dict()}
-                Your task is to predict the value for the column **{out_col}**.
                 The user-defined prompt is:
                 "{prompt_template}"
                 
@@ -186,13 +187,10 @@ def row_by_row_tagger(session_key, csv_path, config_path, input_columns, output_
                 Explanation: <why you chose this answer>
                 """
 
-                # 🔹 Call LLM API with BOTH system & user prompts
                 best_answer, explanation = call_llm_tagging(system_prompt, user_prompt)
 
-                # Store in dataframe
                 df.at[i, out_col] = best_answer
 
-                # Log the result
                 log_entry = {
                     "row_index": i,
                     "column": out_col,
@@ -207,21 +205,21 @@ def row_by_row_tagger(session_key, csv_path, config_path, input_columns, output_
         # Save the tagged CSV
         df.to_csv(tagged_path, index=False)
 
-        # Update progress status
+        # ✅ Update progress status
         PROGRESS_STATUS[session_key]["status"] = "finished"
         PROGRESS_STATUS[session_key]["tagged_file"] = tagged_path
         PROGRESS_STATUS[session_key]["logs_file"] = logs_path
 
-        # 🔹 Save paths in session
-        from django.contrib.sessions.backends.db import SessionStore
-        session = SessionStore(session_key=session_key)
-        session['tagged_file'] = tagged_path
-        session['logs_file'] = logs_path
-        session.save()
+        # ✅ Store in Django cache instead of SessionStore
+        cache.set(f"tagged_file_{session_key}", tagged_path, timeout=3600)
+        cache.set(f"logs_file_{session_key}", logs_path, timeout=3600)
+
+        print(f"DEBUG: Tagging completed. Files saved -> {tagged_path} and {logs_path}")
 
     except Exception as e:
         PROGRESS_STATUS[session_key]["status"] = "error"
         print(f"Tagging Error: {e}")
+
 def dummy_llm_call(prompt):
     """Fake LLM call for demonstration."""
     # In reality, you'd call your local LLM here.

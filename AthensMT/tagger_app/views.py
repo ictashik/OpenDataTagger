@@ -211,9 +211,13 @@ def tagging_progress_view(request):
         return JsonResponse({'error': 'No progress data found'}, status=400)
 
     progress_data = PROGRESS_STATUS[session_key]
+
+    # 🔹 DEBUG: Print progress updates to check if "finished" is ever set
+    print(f"DEBUG: Progress for {session_key} -> {progress_data}")
+
     logs = []
 
-    # 🔹 Get the correct logs file from session, not a stale one
+    # 🔹 Get the correct logs file from session
     logs_path = request.session.get("csv_filepath", "").replace(".csv", "_logs.csv")
 
     if logs_path and os.path.exists(logs_path):
@@ -240,19 +244,23 @@ from django.shortcuts import render, redirect
 from django.conf import settings
 import pandas as pd
 import os
+from django.core.cache import cache
 
 def results_view(request):
     """Screen 4: Show tagged CSV results + logs + download options"""
-    
-    # Debug: Print session contents
-    print("DEBUG: Session Data:", dict(request.session))
 
-    # Retrieve paths from session
-    tagged_file = request.session.get('tagged_file')
-    logs_file = request.session.get('logs_file')
+    session_key = request.session.get('tagging_session_key')
+    
+    # ✅ Retrieve paths from Django cache
+    tagged_file = cache.get(f"tagged_file_{session_key}")
+    logs_file = cache.get(f"logs_file_{session_key}")
+
+    # ✅ Debugging: Print session contents
+    print(f"DEBUG: Session Data in results_view -> {dict(request.session)}")
+    print(f"DEBUG: Cached files -> {tagged_file}, {logs_file}")
 
     if not tagged_file or not os.path.exists(tagged_file):
-        print("🚨 Error: Tagged file not found in session!")
+        print("🚨 Error: Tagged file not found in session! Redirecting...")
         return redirect('tagging')
 
     # Load first 10 rows for preview
@@ -263,9 +271,6 @@ def results_view(request):
     # Generate proper URLs for download
     tagged_file_url = settings.MEDIA_URL + os.path.basename(tagged_file) if os.path.exists(tagged_file) else None
     logs_file_url = settings.MEDIA_URL + os.path.basename(logs_file) if logs_file and os.path.exists(logs_file) else None
-
-    print("DEBUG: Generated Tagged File URL:", tagged_file_url)
-    print("DEBUG: Generated Logs File URL:", logs_file_url)
 
     return render(request, 'results.html', {
         "tagged_file_url": tagged_file_url,

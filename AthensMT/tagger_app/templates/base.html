@@ -51,6 +51,10 @@
         {% block content %}{% endblock %}
     </div>
 
+    <div class="w-full text-center p-2 bg-gray-200 dark:bg-gray-800 text-gray-600 dark:text-gray-400 text-xs fixed bottom-0">
+        AI-powered tagging using <span id="selected-model">Llama3</span>. AI can make mistakes—please review results carefully.
+    </div>
+
     <script>
         function toggleDarkMode() {
             document.body.classList.toggle('dark-mode');
