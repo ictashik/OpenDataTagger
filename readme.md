@@ -1,3 +1,5 @@
+Below is the entire Markdown text enclosed in triple backticks. You can copy and paste this directly into your README.md file.
+
 # OpenDataTagger
 
 OpenDataTagger is an **AI-powered CSV tagging tool** built with Django. It allows users to upload CSV files, configure custom tagging prompts, and process data row-by-row using a local LLM (Llama3). The application provides real-time progress updates, detailed logs, and downloadable results—all wrapped in a modern, responsive UI powered by Tailwind CSS.
@@ -44,11 +46,11 @@ OpenDataTagger is an **AI-powered CSV tagging tool** built with Django. It allow
 	2.	Create a Virtual Environment & Activate It:
 
 python3 -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
+source venv/bin/activate  # For Windows: venv\Scripts\activate
 
 
 	3.	Install Dependencies:
-If you have a requirements.txt:
+If you have a requirements.txt file:
 
 pip install -r requirements.txt
 
@@ -86,7 +88,7 @@ Usage
 	•	Once tagging is complete, navigate to the Results page.
 	•	Preview the tagged CSV file and download both the tagged file and the logs.
 
-## Project Structure
+Project Structure
 
 ictashik-opendatatagger.git/
 ├── inint.t
@@ -118,27 +120,28 @@ ictashik-opendatatagger.git/
             ├── tagging.html
             └── upload.html
 
-## Configuration
+Configuration
 	•	Django Settings:
-All configurations are managed in AthensMT/AthensMT/settings.py. Be sure to update the ALLOWED_HOSTS, DEBUG, and other settings for your deployment environment.
+All configurations are managed in AthensMT/AthensMT/settings.py. Update ALLOWED_HOSTS, DEBUG, and other settings as necessary for your deployment environment.
 	•	Media Files:
 Uploaded CSV files and generated outputs (tagged CSV and logs) are stored in the media/ directory.
 	•	LLM Integration:
-The integration with the local LLM is implemented in tagger_app/utils.py using an OpenAI-like client. Update LLM_MODEL_NAME, the API endpoint, or API key as necessary.
+The integration with the local LLM is implemented in tagger_app/utils.py using an OpenAI-like client. Update LLM_MODEL_NAME, the API endpoint, or the API key as needed.
 	•	Caching:
-Django’s LocMemCache is used for tracking real-time LLM usage statistics and the progress of the tagging process.
+Django’s LocMemCache is used to track real-time LLM usage statistics and the progress of the tagging process.
 
-## Contributing
+Contributing
 
-Contributions are welcome! Please feel free to open issues or submit pull requests with improvements or bug fixes.
+Contributions are welcome! Please open issues or submit pull requests for improvements or bug fixes.
 
-## License
+License
 
 This project is open source. Include your license information here if applicable.
 
-## Acknowledgments
+Acknowledgments
 	•	Django
 	•	Tailwind CSS
 	•	OpenAI API
-    •	Ollama
-	•	Thanks to all contributors and the open source community for their support.
+	•	Special thanks to all contributors and the open source community.
+
+If you still encounter formatting issues, try pasting the content into a plain text editor and then saving it as `README.md`.
