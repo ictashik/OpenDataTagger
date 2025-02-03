@@ -35,7 +35,8 @@ BASE_URL = "/ODT/"  # You can change this later if needed
 ALLOWED_HOSTS = [
     "datatools.sjri.res.in",
     "localhost",
-    "127.0.0.1"
+    "127.0.0.1",
+    '10.10.60.150'
 ]
 CSRF_TRUSTED_ORIGINS = [
     "https://datatools.sjri.res.in", 
