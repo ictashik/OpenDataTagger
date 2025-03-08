@@ -1,18 +1,6 @@
-# tagger_app/utils.py
-
-import pandas as pd
-import os
-# tagger_app/utils.py
-
 import openai
 import pandas as pd
 import os
-
-# tagger_app/utils.py
-import openai
-import time
-# tagger_app/utils.py
-import openai
 import time
 from django.core.cache import cache
 
@@ -23,7 +11,7 @@ LLM_CACHE_KEYS = {
 }
 
 client = openai.OpenAI(
-    base_url='http://localhost:6000/v1',
+    base_url='http://10.20.110.114:11434/v1',
     api_key='ollama'  # Required, but unused
 )
 
@@ -89,8 +77,8 @@ def load_config_file(config_path):
 
         # Convert to list of dicts
         return df.to_dict('records')
-    except:
-        # If any error reading, return empty
+    except Exception as e:
+        print(f"Error reading config file: {e}")
         return []
 
 def save_config_file(config_path, config_data):
@@ -118,14 +106,7 @@ PROGRESS_STATUS = {}
 #     "logs_file": "..."
 # }
 
-import pandas as pd
-import os
-import pandas as pd
-import os
-
 from django.contrib.sessions.backends.db import SessionStore
-
-from django.core.cache import cache
 
 def row_by_row_tagger(session_key, csv_path, config_path, input_columns, output_definitions):
     """
