@@ -1,8 +1,7 @@
 # tagger_app/views.py
 import threading
 from django.shortcuts import render, redirect
-# tagger_app/views.py
-
+from django.conf import settings
 from django.core.files.storage import FileSystemStorage
 import os
 import pandas as pd
@@ -15,14 +14,9 @@ from .utils import (
 )
 import uuid
 from .utils import save_config_file
-
-from django.core.files.storage import FileSystemStorage
-import os
-
-# tagger_app/views.py
-from django.http import JsonResponse
 from django.core.cache import cache
 from .utils import LLM_MODEL_NAME, LLM_CACHE_KEYS
+import time
 
 def llm_status_view(request):
     """Returns real-time LLM usage statistics."""
@@ -173,38 +167,10 @@ def tagging_view(request):
     # Render the template which will poll for progress
     return render(request, 'tagging.html', {})
 
-from django.http import JsonResponse
-from .utils import PROGRESS_STATUS
-
-from django.http import JsonResponse
-import pandas as pd
-import os
-from .utils import PROGRESS_STATUS
-
-from django.http import JsonResponse
-import pandas as pd
-import os
-from .utils import PROGRESS_STATUS
-
-from django.http import JsonResponse
-import pandas as pd
-import os
-from .utils import PROGRESS_STATUS
-
-from django.http import JsonResponse
-import pandas as pd
-import os
-import time  # Added to ensure we wait before reading the file
-from .utils import PROGRESS_STATUS
-from django.http import JsonResponse
-import pandas as pd
-import os
-import time  # Ensures logs are flushed before reading
-from .utils import PROGRESS_STATUS
-
 def tagging_progress_view(request):
     """
     Returns JSON progress for the tagging process, including real-time logs.
+    Enhanced with persistent file checking.
     """
     session_key = request.session.get('tagging_session_key')
     if not session_key or session_key not in PROGRESS_STATUS:
@@ -217,8 +183,18 @@ def tagging_progress_view(request):
 
     logs = []
 
-    # 🔹 Get the correct logs file from session
-    logs_path = request.session.get("csv_filepath", "").replace(".csv", "_logs.csv")
+    # ✅ Try to get logs file from multiple sources
+    logs_path = None
+    
+    # First, try from cache
+    cached_logs_path = cache.get(f"logs_file_{session_key}")
+    if cached_logs_path and os.path.exists(cached_logs_path):
+        logs_path = cached_logs_path
+    else:
+        # Fall back to session-based path
+        csv_filepath = request.session.get("csv_filepath", "")
+        if csv_filepath:
+            logs_path = csv_filepath.replace(".csv", "_logs.csv")
 
     if logs_path and os.path.exists(logs_path):
         try:
@@ -233,19 +209,21 @@ def tagging_progress_view(request):
                 logs = [{"error": "Log format incorrect. Missing columns."}]
         except Exception as e:
             logs = [{"error": f"Failed to read logs: {str(e)}"}]
+    else:
+        logs = [{"info": "Logs file not yet available or still being created."}]
+
+    # ✅ Add file persistence status
+    tagged_file_path = cache.get(f"tagged_file_{session_key}")
+    files_saved = tagged_file_path and os.path.exists(tagged_file_path)
 
     return JsonResponse({
         "done": progress_data["done"],
         "total": progress_data["total"],
         "status": progress_data["status"],
-        "logs": logs
+        "logs": logs,
+        "files_saved": files_saved,
+        "last_save": f"Row {progress_data['done']}" if files_saved else "Not saved yet"
     })
-from django.shortcuts import render, redirect
-from django.conf import settings
-import pandas as pd
-import os
-from django.core.cache import cache
-
 def results_view(request):
     """Screen 4: Show tagged CSV results + logs + download options"""
 
@@ -259,9 +237,30 @@ def results_view(request):
     print(f"DEBUG: Session Data in results_view -> {dict(request.session)}")
     print(f"DEBUG: Cached files -> {tagged_file}, {logs_file}")
 
+    # ✅ RECOVERY MECHANISM: If cache is empty, try to find auto-saved files
     if not tagged_file or not os.path.exists(tagged_file):
-        print("🚨 Error: Tagged file not found in session! Redirecting...")
-        return redirect('tagging')
+        csv_path = request.session.get('csv_filepath')
+        if csv_path and os.path.exists(csv_path):
+            base, ext = os.path.splitext(csv_path)
+            auto_tagged_file = base + "_tagged.csv"
+            auto_logs_file = base + "_logs.csv"
+            
+            if os.path.exists(auto_tagged_file):
+                tagged_file = auto_tagged_file
+                logs_file = auto_logs_file if os.path.exists(auto_logs_file) else None
+                
+                # Update cache with recovered files (24 hours for long jobs)
+                cache.set(f"tagged_file_{session_key}", tagged_file, timeout=86400)
+                if logs_file:
+                    cache.set(f"logs_file_{session_key}", logs_file, timeout=86400)
+                    
+                print(f"DEBUG: Recovered auto-saved files -> {tagged_file}, {logs_file}")
+            else:
+                print("🚨 Error: No tagged file found (neither cached nor auto-saved)! Redirecting...")
+                return redirect('tagging')
+        else:
+            print("🚨 Error: No CSV path in session! Redirecting to upload...")
+            return redirect('upload_file')
 
     # Load first 10 rows for preview
     df = pd.read_csv(tagged_file)
