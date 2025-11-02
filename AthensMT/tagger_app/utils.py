@@ -4,7 +4,7 @@ import os
 import time
 from django.core.cache import cache
 
-LLM_MODEL_NAME = "llama3"
+LLM_MODEL_NAME = "gemma3:27b"
 LLM_CACHE_KEYS = {
     "requests": "llm_request_count",
     "total_time": "llm_total_inference_time",
