@@ -1,90 +1,103 @@
 {% extends "base.html" %}
 
 {% block content %}
-<div class="flex flex-col items-center justify-center min-h-screen bg-gray-900 text-white">
+<div class="flex flex-col items-center justify-center min-h-screen bg-gray-900 text-white px-4">
+
     <div class="w-full max-w-4xl text-center">
-        <h1 class="text-3xl font-bold text-blue-400">AI Tagging in Progress...</h1>
-        <p class="text-gray-400 text-sm mt-2">Analyzing data row by row, generating AI-assisted outputs.</p>
+        <h1 class="text-3xl font-bold text-blue-400">AI Tagging in Progress</h1>
+        <p class="text-gray-400 text-sm mt-1">Analysing data row by row and generating AI-assisted outputs.</p>
     </div>
 
-    <!-- Progress Bar -->
-    <div class="w-full max-w-4xl bg-gray-700 rounded-full h-4 mt-5">
-        <div id="progress-bar" class="bg-blue-500 h-4 rounded-full transition-all" style="width: 0%;"></div>
+    <!-- Progress bar -->
+    <div class="w-full max-w-4xl mt-6">
+        <div class="flex justify-between text-xs text-gray-400 mb-1">
+            <span id="progress-label">Initialising…</span>
+            <span id="progress-pct">0%</span>
+        </div>
+        <div class="w-full bg-gray-700 rounded-full h-3">
+            <div id="progress-bar" class="bg-blue-500 h-3 rounded-full transition-all duration-300" style="width:0%"></div>
+        </div>
     </div>
-    <p id="progress-info" class="mt-2 text-gray-300 text-sm">Initializing tagging process...</p>
 
-    <!-- Live Logs Full-Width -->
-    <div class="w-full max-w-6xl mt-6">
-        <h3 class="text-lg font-semibold text-gray-300 text-center">Processing Logs</h3>
-        <div id="logs" class="h-96 overflow-y-auto bg-black text-green-400 p-4 rounded-lg border border-gray-700 shadow-xl mt-2 font-mono">
-            <p id="log-placeholder" class="text-gray-500">Awaiting system logs...</p>
+    <!-- Live log terminal -->
+    <div class="w-full max-w-4xl mt-6">
+        <div class="flex items-center justify-between mb-2">
+            <h3 class="text-sm font-semibold text-gray-300 uppercase tracking-wide">Live Logs</h3>
+            <span id="log-count" class="text-xs text-gray-500">0 entries</span>
+        </div>
+        <div id="log-box"
+             class="h-96 overflow-y-auto bg-black rounded-lg border border-gray-700 p-3 font-mono text-xs space-y-2">
+            <p id="log-empty" class="text-gray-600">Awaiting first result…</p>
         </div>
     </div>
 </div>
 
 <script>
-    function checkProgress() {
-        fetch("{% url 'tagging_progress' %}")
-            .then(response => response.json())
-            .then(data => {
-                console.log("Progress API Response:", data);
+var logsSeen = 0;   // cursor — number of log entries already rendered
 
-                if (data.error) {
-                    document.getElementById('progress-info').innerHTML = data.error;
-                    return;
-                }
+function appendLogs(logs) {
+    var box   = document.getElementById('log-box');
+    var empty = document.getElementById('log-empty');
 
-                let done = data.done;
-                let total = data.total;
-                let status = data.status;
+    logs.forEach(function(log) {
+        if (empty) { empty.remove(); empty = null; }
 
-                // Update Progress Bar
-                let progressBar = document.getElementById('progress-bar');
-                let percentage = (done / total) * 100;
-                progressBar.style.width = percentage + "%";
+        var entry = document.createElement('div');
+        entry.className = 'border-b border-gray-800 pb-2';
+        entry.innerHTML =
+            '<span class="text-yellow-400 font-bold">[Row ' + log.row_index + '] ' + escHtml(log.column) + '</span><br>' +
+            '<span class="text-gray-400"><b>Prompt:</b> '      + escHtml(log.prompt)      + '</span><br>' +
+            '<span class="text-green-400"><b>Answer:</b> '     + escHtml(log.best_answer) + '</span><br>' +
+            '<span class="text-blue-400"><i>Explanation:</i> ' + escHtml(log.explanation) + '</span>';
+        box.appendChild(entry);
+    });
 
-                document.getElementById('progress-info').innerHTML = 
-                    `Processing ${done} of ${total} rows... [${status}]`;
-
-                // Log Updates
-                let logContainer = document.getElementById('logs');
-                let logPlaceholder = document.getElementById('log-placeholder');
-
-                if (logPlaceholder) {
-                    logPlaceholder.style.display = data.logs.length === 0 ? "block" : "none";
-                }
-
-                logContainer.innerHTML = ''; // Clear old logs
-
-                data.logs.forEach(log => {
-                    let logEntry = document.createElement('div');
-                    logEntry.classList.add("p-2", "border-b", "border-gray-700");
-                    logEntry.innerHTML = `
-                        <span class="text-yellow-300 font-bold">[Row ${log.row_index}] ${log.column}</span><br>
-                        <span class="text-gray-400"><strong>Prompt:</strong> ${log.prompt}</span><br>
-                        <span class="text-green-400"><strong>Best Answer:</strong> ${log.best_answer}</span><br>
-                        <span class="text-blue-400"><em>Explanation:</em> ${log.explanation}</span>
-                    `;
-                    logContainer.appendChild(logEntry);
-                });
-
-                // Auto-scroll logs to bottom
-                logContainer.scrollTop = logContainer.scrollHeight;
-
-                // If finished, redirect to results
-                if (status === "finished") {
-                    console.log("Tagging completed. Redirecting to results...");
-                    window.location.href = "{% url 'results' %}";
-                } else {
-                    setTimeout(checkProgress, 1000);
-                }
-            })
-            .catch(err => {
-                console.error("Error fetching progress:", err);
-                setTimeout(checkProgress, 2000);
-            });
+    if (logs.length) {
+        box.scrollTop = box.scrollHeight;
     }
+}
 
-    document.addEventListener("DOMContentLoaded", checkProgress);
+function escHtml(s) {
+    return String(s)
+        .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+        .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function poll() {
+    fetch("{% url 'tagging_progress' %}?since=" + logsSeen)
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (data.error) {
+                document.getElementById('progress-label').textContent = data.error;
+                setTimeout(poll, 2000);
+                return;
+            }
+
+            var done  = data.done  || 0;
+            var total = data.total || 0;
+            var pct   = total > 0 ? Math.round((done / total) * 100) : 0;
+
+            document.getElementById('progress-bar').style.width = pct + '%';
+            document.getElementById('progress-pct').textContent  = pct + '%';
+            document.getElementById('progress-label').textContent =
+                'Row ' + done + ' of ' + total + ' — ' + data.status;
+
+            if (data.logs && data.logs.length) {
+                appendLogs(data.logs);
+                logsSeen = data.log_total;
+                document.getElementById('log-count').textContent = logsSeen + ' entries';
+            }
+
+            if (data.status === 'finished') {
+                document.getElementById('progress-label').textContent = 'Done! Redirecting…';
+                setTimeout(function() { window.location.href = "{% url 'results' %}"; }, 800);
+            } else {
+                setTimeout(poll, 1000);
+            }
+        })
+        .catch(function() { setTimeout(poll, 2000); });
+}
+
+document.addEventListener('DOMContentLoaded', poll);
 </script>
 {% endblock %}

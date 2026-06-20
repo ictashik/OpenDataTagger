@@ -190,7 +190,8 @@ def row_by_row_tagger(session_key, csv_path, config_path, input_columns, output_
             "tagged_file": "",
             "logs_file": "",
             "start_time": time.time(),
-            "last_update": time.time()
+            "last_update": time.time(),
+            "live_logs": [],        # in-memory ring buffer, newest at the end
         }
 
         # Define paths for tagged CSV & logs
@@ -204,9 +205,8 @@ def row_by_row_tagger(session_key, csv_path, config_path, input_columns, output_
         PROGRESS_STATUS[session_key]["tagged_file"] = tagged_path
         PROGRESS_STATUS[session_key]["logs_file"] = logs_path
 
-        # Create empty log file if not exists
-        if not os.path.exists(logs_path):
-            pd.DataFrame(columns=["row_index", "column", "prompt", "best_answer", "explanation"]).to_csv(logs_path, index=False)
+        # Write log file header
+        pd.DataFrame(columns=["row_index", "column", "prompt", "best_answer", "explanation"]).to_csv(logs_path, index=False)
 
         # ✅ Initialize tagged CSV with original data structure
         for definition in output_definitions:
@@ -218,79 +218,69 @@ def row_by_row_tagger(session_key, csv_path, config_path, input_columns, output_
         df.to_csv(tagged_path, index=False)
         print(f"DEBUG: Initial tagged CSV structure saved to {tagged_path}")
 
-        # Define SYSTEM PROMPT
-        system_prompt = f"""
-        You are an AI-powered CSV Tagger.
-        The user has uploaded a CSV file containing {len(df.columns)} columns and {total_rows} rows.
-        The columns are: {', '.join(df.columns)}.
-        Your job is to analyze the data row by row and infer values based on user-defined prompts.
-        Always return answers in the expected format.
-        """
+        # Only use the columns the user selected as input context
+        context_cols = [c for c in input_columns if c in df.columns] if input_columns else list(df.columns)
 
-        # ✅ Collect log entries for batch writing
-        log_batch = []
+        # Define SYSTEM PROMPT describing only the input columns
+        system_prompt = (
+            f"You are an AI-powered CSV Tagger.\n"
+            f"You receive one row at a time from a dataset with {total_rows} rows.\n"
+            f"The context fields provided per row are: {', '.join(context_cols)}.\n"
+            f"Analyse the data and answer the user-defined prompt precisely.\n"
+            f"Always format your response as:\n"
+            f"Best Answer: <your answer>\n"
+            f"Explanation: <brief reason>"
+        )
 
-        # Process rows for tagging
+        # Process rows — save CSV and log after every single row
         for i in range(total_rows):
             row = df.loc[i]
+            row_context = {c: row[c] for c in context_cols}
 
             for definition in output_definitions:
                 out_col = definition['OutputColumn']
                 prompt_template = definition['PromptTemplate']
 
-                user_prompt = f"""
-                You are analyzing row {i+1}/{total_rows}.
-                Here is the row data:
-                {row.to_dict()}
-                The user-defined prompt is:
-                "{prompt_template}"
-                
-                Please strictly format your response as:
-                Best Answer: <your answer>
-                Explanation: <why you chose this answer>
-                """
+                rendered_prompt = prompt_template
+                for col, val in row_context.items():
+                    rendered_prompt = rendered_prompt.replace(f'{{{col}}}', str(val))
+
+                user_prompt = (
+                    f"Row {i+1}/{total_rows}:\n"
+                    + "\n".join(f"  {k}: {v}" for k, v in row_context.items())
+                    + f"\n\nTask: {rendered_prompt}\n\n"
+                    f"Best Answer: <your answer>\n"
+                    f"Explanation: <brief reason>"
+                )
 
                 best_answer, explanation = call_llm_tagging(system_prompt, user_prompt)
-
                 df.at[i, out_col] = best_answer
 
                 log_entry = {
                     "row_index": i,
                     "column": out_col,
-                    "prompt": user_prompt,
+                    "prompt": rendered_prompt,   # store the rendered version, not the raw template
                     "best_answer": best_answer,
-                    "explanation": explanation
+                    "explanation": explanation,
                 }
-                log_batch.append(log_entry)
 
-            # Update progress
+                # Append to disk immediately
+                pd.DataFrame([log_entry]).to_csv(logs_path, mode='a', header=False, index=False)
+
+                # Keep last 100 entries in memory for the live feed
+                live = PROGRESS_STATUS[session_key]["live_logs"]
+                live.append(log_entry)
+                if len(live) > 100:
+                    live.pop(0)
+
+            # Save tagged CSV after every row
+            df.to_csv(tagged_path, index=False)
+
             PROGRESS_STATUS[session_key]["done"] = i + 1
             PROGRESS_STATUS[session_key]["status"] = f"Processing row {i + 1}/{total_rows}"
             PROGRESS_STATUS[session_key]["last_update"] = time.time()
 
-            # ✅ SAVE EVERY 10 ROWS FOR PERSISTENCE
-            if (i + 1) % 10 == 0:
-                try:
-                    # Save current progress to tagged CSV
-                    df.to_csv(tagged_path, index=False)
-                    
-                    # Append log batch to logs CSV
-                    if log_batch:
-                        pd.DataFrame(log_batch).to_csv(logs_path, mode='a', header=False, index=False)
-                        log_batch = []  # Clear batch after saving
-                    
-                    print(f"DEBUG: Progress saved at row {i + 1}/{total_rows} -> {tagged_path}")
-                    PROGRESS_STATUS[session_key]["status"] = f"Saved progress at row {i + 1}/{total_rows}"
-                    
-                except Exception as save_error:
-                    print(f"ERROR: Failed to save progress at row {i + 1}: {save_error}")
-                    PROGRESS_STATUS[session_key]["status"] = f"Save error at row {i + 1}: {save_error}"
-
-        # ✅ FINAL SAVE - Save any remaining log entries
-        if log_batch:
-            pd.DataFrame(log_batch).to_csv(logs_path, mode='a', header=False, index=False)
-
-        # Save the final tagged CSV
+        # Final save
         df.to_csv(tagged_path, index=False)
 
         # ✅ Update progress status

@@ -16,7 +16,6 @@ import uuid
 from .utils import save_config_file
 from django.core.cache import cache
 from .utils import LLM_CACHE_KEYS, get_active_connection, load_connections, save_connection
-import time
 
 def llm_status_view(request):
     """Returns real-time LLM usage statistics."""
@@ -129,10 +128,11 @@ def define_columns_view(request):
         return redirect('tagging')
 
     else:
-        # Render the page with columns + existing config
+        import json
         context = {
             'columns': all_columns,
-            'config_data': config_data,  # e.g. [{'OutputColumn':..., 'PromptTemplate':...}, ...]
+            'columns_json': json.dumps(all_columns),
+            'config_data': config_data,
         }
         return render(request, 'define_columns.html', context)
 
@@ -178,51 +178,21 @@ def tagging_progress_view(request):
 
     progress_data = PROGRESS_STATUS[session_key]
 
-    # 🔹 DEBUG: Print progress updates to check if "finished" is ever set
-    print(f"DEBUG: Progress for {session_key} -> {progress_data}")
+    # Serve logs from the in-memory ring buffer — no disk read, always current
+    since = int(request.GET.get('since', 0))
+    live_logs = progress_data.get("live_logs", [])
+    new_logs = live_logs[since:]   # only entries the client hasn't seen yet
 
-    logs = []
-
-    # ✅ Try to get logs file from multiple sources
-    logs_path = None
-    
-    # First, try from cache
-    cached_logs_path = cache.get(f"logs_file_{session_key}")
-    if cached_logs_path and os.path.exists(cached_logs_path):
-        logs_path = cached_logs_path
-    else:
-        # Fall back to session-based path
-        csv_filepath = request.session.get("csv_filepath", "")
-        if csv_filepath:
-            logs_path = csv_filepath.replace(".csv", "_logs.csv")
-
-    if logs_path and os.path.exists(logs_path):
-        try:
-            time.sleep(0.1)  # Ensures logs are fully written before reading
-            df_logs = pd.read_csv(logs_path)
-
-            # Ensure logs have correct structure
-            required_columns = {"row_index", "column", "prompt", "best_answer", "explanation"}
-            if required_columns.issubset(df_logs.columns):
-                logs = df_logs.tail(10).to_dict('records')
-            else:
-                logs = [{"error": "Log format incorrect. Missing columns."}]
-        except Exception as e:
-            logs = [{"error": f"Failed to read logs: {str(e)}"}]
-    else:
-        logs = [{"info": "Logs file not yet available or still being created."}]
-
-    # ✅ Add file persistence status
     tagged_file_path = cache.get(f"tagged_file_{session_key}")
-    files_saved = tagged_file_path and os.path.exists(tagged_file_path)
+    files_saved = bool(tagged_file_path and os.path.exists(tagged_file_path))
 
     return JsonResponse({
         "done": progress_data["done"],
         "total": progress_data["total"],
         "status": progress_data["status"],
-        "logs": logs,
+        "logs": new_logs,
+        "log_total": len(live_logs),
         "files_saved": files_saved,
-        "last_save": f"Row {progress_data['done']}" if files_saved else "Not saved yet"
     })
 def results_view(request):
     """Screen 4: Show tagged CSV results + logs + download options"""
@@ -301,14 +271,17 @@ def connection_editor_view(request):
 
 
 def test_connection_view(request):
-    """Quick reachability check against the configured Ollama server."""
+    """Quick reachability check using host/port from query params (the form fields)."""
     import urllib.request
-    conn = get_active_connection()
-    url = f"http://{conn['host']}:{conn['port']}/api/tags"
+    import json as _json
+    host = request.GET.get('host', '').strip()
+    port = request.GET.get('port', '').strip()
+    if not host or not port:
+        return JsonResponse({'success': False, 'error': 'Host and port are required.'}, status=400)
+    url = f"http://{host}:{port}/api/tags"
     try:
         with urllib.request.urlopen(url, timeout=4) as resp:
-            import json
-            data = json.loads(resp.read())
+            data = _json.loads(resp.read())
             models = [m['name'] for m in data.get('models', [])]
             return JsonResponse({'success': True, 'models': models})
     except Exception as e:

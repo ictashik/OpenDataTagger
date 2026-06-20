@@ -1,77 +1,355 @@
 {% extends "base.html" %}
 
 {% block content %}
-<div class="flex justify-center items-center min-h-screen">
-    <div class="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-lg w-full max-w-2xl">
-        <h1 class="text-2xl font-semibold text-gray-900 dark:text-gray-100">Define Input & Output Columns</h1>
-        <p class="text-gray-600 dark:text-gray-400 mb-4">Select input columns and define how AI should generate outputs.</p>
+<div class="max-w-4xl mx-auto py-8 space-y-6">
 
-        <form method="post" class="space-y-4">
-            {% csrf_token %}
-
-            <!-- Input Columns Section -->
-            <h4 class="text-lg font-medium text-gray-700 dark:text-gray-300">Select Input Columns</h4>
-            <div class="space-y-2">
-                {% for column in columns %}
-                    <div class="flex items-center space-x-2">
-                        <input type="checkbox" name="input_columns" value="{{ column }}" id="input_{{ column }}" 
-                               class="w-4 h-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500 dark:bg-gray-900"
-                               {% if column in request.session.input_columns %}checked{% endif %}>
-                        <label for="input_{{ column }}" class="text-gray-700 dark:text-gray-300">{{ column }}</label>
-                    </div>
-                {% endfor %}
-            </div>
-
-            <hr class="border-gray-300 dark:border-gray-600">
-
-            <!-- Output Columns Section -->
-            <h4 class="text-lg font-medium text-gray-700 dark:text-gray-300">Define Output Columns & Prompts</h4>
-            <div id="output-column-container" class="space-y-3">
-                {% for entry in config_data %}
-                    <div class="output-column flex space-x-2">
-                        <input type="text" name="output_column" class="flex-1 px-4 py-2 border rounded-lg dark:bg-gray-900 dark:border-gray-600" value="{{ entry.OutputColumn }}" placeholder="Column Name" required>
-                        <input type="text" name="prompt_template" class="flex-1 px-4 py-2 border rounded-lg dark:bg-gray-900 dark:border-gray-600" value="{{ entry.PromptTemplate }}" placeholder="Prompt (e.g., Check if food is veg or non-veg)" required>
-                        <button type="button" class="px-3 py-2 text-white bg-red-500 rounded-lg remove-column">X</button>
-                    </div>
-                {% endfor %}
-            </div>
-
-            <!-- Add Output Column Button -->
-            <button type="button" id="add-output-column" class="w-full bg-green-600 hover:bg-green-700 text-white font-semibold py-2 px-4 rounded-lg shadow-md transition">+ Add Output Column</button>
-
-            <!-- Submit Button -->
-            <button type="submit" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2 px-4 rounded-lg shadow-md transition mt-3">Save & Continue</button>
-        </form>
+    <div>
+        <h1 class="text-2xl font-semibold text-gray-900 dark:text-gray-100">Define Columns</h1>
+        <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">
+            Choose which columns give the AI context, then define what it should tag or generate.
+        </p>
     </div>
+
+    <form method="post" class="space-y-6" id="main-form">
+        {% csrf_token %}
+
+        <!-- ── Step 1: Input Context ── -->
+        <div class="bg-white dark:bg-gray-800 rounded-lg shadow p-6">
+            <div class="flex items-center justify-between mb-1">
+                <h2 class="text-base font-semibold text-gray-800 dark:text-gray-100">1. Input Context Columns</h2>
+                <div class="flex gap-2 text-xs">
+                    <button type="button" id="select-all-btn"
+                        class="text-indigo-500 hover:text-indigo-700 dark:hover:text-indigo-300 font-medium">Select all</button>
+                    <span class="text-gray-300 dark:text-gray-600">|</span>
+                    <button type="button" id="clear-all-btn"
+                        class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 font-medium">Clear</button>
+                </div>
+            </div>
+            <p class="text-xs text-gray-500 dark:text-gray-400 mb-4">
+                Only selected columns are sent to the AI. Click chips to toggle.
+            </p>
+
+            <div class="flex flex-wrap gap-2" id="chip-container">
+                {% for column in columns %}
+                <label class="chip-label cursor-pointer select-none">
+                    <input type="checkbox"
+                           name="input_columns"
+                           value="{{ column }}"
+                           class="chip-cb"
+                           style="display:none"
+                           {% if column in request.session.input_columns %}checked{% endif %}>
+                    <span class="chip-span px-3 py-1 rounded-full text-sm border transition-all">{{ column }}</span>
+                </label>
+                {% endfor %}
+            </div>
+
+            <p class="text-xs text-gray-400 dark:text-gray-500 mt-3">
+                <span id="sel-count">0</span> of {{ columns|length }} columns selected
+            </p>
+        </div>
+
+        <!-- ── Step 2: Output Tag Definitions ── -->
+        <div class="bg-white dark:bg-gray-800 rounded-lg shadow p-6 space-y-4">
+            <div class="flex items-start justify-between">
+                <div>
+                    <h2 class="text-base font-semibold text-gray-800 dark:text-gray-100">2. Output Tags &amp; Prompts</h2>
+                    <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                        Define what the AI should generate per row. Type
+                        <kbd class="bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5 rounded text-xs font-mono">#</kbd>
+                        in a prompt to pick a column — it inserts <code class="bg-gray-100 dark:bg-gray-700 px-1 rounded text-xs">{ColumnName}</code>
+                        which is replaced with each row's actual value before sending.
+                    </p>
+                </div>
+                <button type="button" id="add-tag-btn"
+                    class="ml-4 flex-shrink-0 px-4 py-1.5 rounded-md bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium">
+                    + Add Tag
+                </button>
+            </div>
+
+            <div id="tag-container" class="space-y-4">
+                {% for entry in config_data %}
+                <div class="tag-card border border-gray-200 dark:border-gray-700 rounded-lg p-4 space-y-3 bg-gray-50 dark:bg-gray-900">
+                    <div class="flex items-end gap-3">
+                        <div class="flex-1">
+                            <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Output Column Name</label>
+                            <input type="text" name="output_column"
+                                class="w-full px-3 py-2 rounded-md border border-gray-300 dark:border-gray-600
+                                       bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 text-sm
+                                       focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                                value="{{ entry.OutputColumn }}"
+                                placeholder="e.g. is_vegetarian" required>
+                        </div>
+                        <button type="button" class="remove-btn text-xs text-red-400 hover:text-red-600 font-medium px-2 py-2 mb-0.5">
+                            Remove
+                        </button>
+                    </div>
+                    <div>
+                        <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">
+                            Prompt Template
+                            <span class="font-normal text-gray-400 ml-1">— type # to insert a column</span>
+                        </label>
+                        <textarea name="prompt_template" rows="5"
+                            class="prompt-ta w-full px-3 py-2 rounded-md border border-gray-300 dark:border-gray-600
+                                   bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 text-sm
+                                   focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-y font-mono leading-relaxed"
+                            placeholder="e.g. Is {FoodName} vegetarian? Reply with exactly: Yes or No"
+                            required>{{ entry.PromptTemplate }}</textarea>
+                    </div>
+                </div>
+                {% endfor %}
+
+                {% if not config_data %}
+                <div class="tag-card border border-gray-200 dark:border-gray-700 rounded-lg p-4 space-y-3 bg-gray-50 dark:bg-gray-900">
+                    <div class="flex items-end gap-3">
+                        <div class="flex-1">
+                            <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Output Column Name</label>
+                            <input type="text" name="output_column"
+                                class="w-full px-3 py-2 rounded-md border border-gray-300 dark:border-gray-600
+                                       bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 text-sm
+                                       focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                                placeholder="e.g. is_vegetarian" required>
+                        </div>
+                        <button type="button" class="remove-btn text-xs text-red-400 hover:text-red-600 font-medium px-2 py-2 mb-0.5">
+                            Remove
+                        </button>
+                    </div>
+                    <div>
+                        <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">
+                            Prompt Template
+                            <span class="font-normal text-gray-400 ml-1">— type # to insert a column</span>
+                        </label>
+                        <textarea name="prompt_template" rows="5"
+                            class="prompt-ta w-full px-3 py-2 rounded-md border border-gray-300 dark:border-gray-600
+                                   bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 text-sm
+                                   focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-y font-mono leading-relaxed"
+                            placeholder="e.g. Is {FoodName} vegetarian? Reply with exactly: Yes or No"
+                            required></textarea>
+                    </div>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+
+        <button type="submit"
+            class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2.5 px-4 rounded-lg shadow-md text-sm">
+            Save &amp; Start Tagging →
+        </button>
+    </form>
 </div>
 
+<!-- Column picker dropdown -->
+<div id="col-picker"
+     style="display:none; position:fixed; z-index:9999;"
+     class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600
+            rounded-lg shadow-xl py-1 max-h-52 overflow-y-auto text-sm">
+</div>
+
+<script type="application/json" id="columns-data">{{ columns_json|default:"[]"|safe }}</script>
+
 <script>
-    document.getElementById("add-output-column").addEventListener("click", function () {
-        let container = document.getElementById("output-column-container");
-        let newField = document.createElement("div");
-        newField.classList.add("output-column", "flex", "space-x-2", "mt-3");
-        newField.innerHTML = `
-            <input type="text" name="output_column" class="flex-1 px-4 py-2 border rounded-lg dark:bg-gray-900 dark:border-gray-600" placeholder="Column Name" required>
-            <input type="text" name="prompt_template" class="flex-1 px-4 py-2 border rounded-lg dark:bg-gray-900 dark:border-gray-600" placeholder="Prompt (e.g., Check if food is veg or non-veg)" required>
-            <button type="button" class="px-3 py-2 text-white bg-red-500 rounded-lg remove-column">X</button>
-        `;
-        container.appendChild(newField);
+var ALL_COLUMNS = JSON.parse(document.getElementById('columns-data').textContent || '[]');
 
-        // Attach event listener to remove buttons
-        attachRemoveEvent();
-    });
-
-    function attachRemoveEvent() {
-        let removeButtons = document.querySelectorAll(".remove-column");
-        removeButtons.forEach(button => {
-            button.onclick = function () {
-                this.parentElement.remove();
-            };
-        });
+/* ═══════════════════════════════════════
+   CHIP TOGGLE
+═══════════════════════════════════════ */
+function applyChipStyle(cb) {
+    var span = cb.nextElementSibling;
+    if (!span) return;
+    if (cb.checked) {
+        span.style.cssText = 'background:#4f46e5;border-color:#4f46e5;color:#fff;';
+    } else {
+        span.style.cssText = 'background:transparent;border-color:#d1d5db;color:#6b7280;';
     }
+}
 
-    // Ensure remove buttons work for initial fields
-    attachRemoveEvent();
+function updateSelCount() {
+    var n = document.querySelectorAll('.chip-cb:checked').length;
+    document.getElementById('sel-count').textContent = n;
+}
+
+// Init all chips
+document.querySelectorAll('.chip-cb').forEach(function(cb) {
+    applyChipStyle(cb);
+    cb.addEventListener('change', function() {
+        applyChipStyle(cb);
+        updateSelCount();
+    });
+});
+updateSelCount();
+
+// Select all / clear all
+document.getElementById('select-all-btn').addEventListener('click', function() {
+    document.querySelectorAll('.chip-cb').forEach(function(cb) {
+        cb.checked = true;
+        applyChipStyle(cb);
+    });
+    updateSelCount();
+});
+
+document.getElementById('clear-all-btn').addEventListener('click', function() {
+    document.querySelectorAll('.chip-cb').forEach(function(cb) {
+        cb.checked = false;
+        applyChipStyle(cb);
+    });
+    updateSelCount();
+});
+
+/* ═══════════════════════════════════════
+   ADD / REMOVE TAG CARDS
+═══════════════════════════════════════ */
+function makeTagCard() {
+    var div = document.createElement('div');
+    div.className = 'tag-card border border-gray-200 dark:border-gray-700 rounded-lg p-4 space-y-3 bg-gray-50 dark:bg-gray-900';
+    // Build HTML without template literals to avoid any parsing surprises
+    var html = '';
+    html += '<div class="flex items-end gap-3">';
+    html += '  <div class="flex-1">';
+    html += '    <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Output Column Name</label>';
+    html += '    <input type="text" name="output_column"';
+    html += '           class="w-full px-3 py-2 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"';
+    html += '           placeholder="e.g. sentiment" required>';
+    html += '  </div>';
+    html += '  <button type="button" class="remove-btn text-xs text-red-400 hover:text-red-600 font-medium px-2 py-2 mb-0.5">Remove</button>';
+    html += '</div>';
+    html += '<div>';
+    html += '  <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">';
+    html += '    Prompt Template <span class="font-normal text-gray-400 ml-1">— type # to insert a column</span>';
+    html += '  </label>';
+    html += '  <textarea name="prompt_template" rows="5"';
+    html += '    class="prompt-ta w-full px-3 py-2 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-y font-mono leading-relaxed"';
+    html += '    placeholder="e.g. Classify the tone of: {ReviewText}. Reply: Positive, Negative, or Neutral"';
+    html += '    required></textarea>';
+    html += '</div>';
+    div.innerHTML = html;
+    return div;
+}
+
+document.getElementById('add-tag-btn').addEventListener('click', function() {
+    document.getElementById('tag-container').appendChild(makeTagCard());
+});
+
+// Remove card — delegated on the container
+document.getElementById('tag-container').addEventListener('click', function(e) {
+    var btn = e.target.closest('.remove-btn');
+    if (!btn) return;
+    var cards = document.querySelectorAll('.tag-card');
+    if (cards.length > 1) {
+        btn.closest('.tag-card').remove();
+    }
+});
+
+/* ═══════════════════════════════════════
+   # COLUMN PICKER
+═══════════════════════════════════════ */
+var picker     = document.getElementById('col-picker');
+var activeTa   = null;
+var hashStart  = -1;
+var pickerCols = [];
+var pickerIdx  = -1;
+
+function buildPickerHTML(cols) {
+    return cols.map(function(c, i) {
+        return '<div class="picker-item" data-idx="' + i + '" data-col="' + c + '" '
+             + 'style="padding:6px 12px;cursor:pointer;color:#374151;">'
+             + '<span style="color:#6366f1">{</span>' + c + '<span style="color:#6366f1">}</span>'
+             + '</div>';
+    }).join('');
+}
+
+function showPicker(ta, cols) {
+    if (!cols.length) { hidePicker(); return; }
+    pickerCols = cols;
+    pickerIdx  = -1;
+    picker.innerHTML = buildPickerHTML(cols);
+    picker.style.width = Math.max(200, ta.offsetWidth * 0.55) + 'px';
+    var rect = ta.getBoundingClientRect();
+    picker.style.top  = (rect.bottom + window.pageYOffset + 4) + 'px';
+    picker.style.left = (rect.left  + window.pageXOffset) + 'px';
+    picker.style.display = 'block';
+}
+
+function hidePicker() {
+    picker.style.display = 'none';
+    activeTa  = null;
+    hashStart = -1;
+    pickerIdx = -1;
+}
+
+function highlightPicker(idx) {
+    picker.querySelectorAll('.picker-item').forEach(function(el, i) {
+        el.style.background = (i === idx) ? '#eef2ff' : '';
+    });
+}
+
+function insertCol(colName) {
+    if (!activeTa) return;
+    var val    = activeTa.value;
+    var cursor = activeTa.selectionStart;
+    var before = val.substring(0, hashStart);
+    var after  = val.substring(cursor);
+    var ins    = '{' + colName + '}';
+    activeTa.value = before + ins + after;
+    var pos = hashStart + ins.length;
+    activeTa.setSelectionRange(pos, pos);
+    activeTa.focus();
+    hidePicker();
+}
+
+// Input delegation (covers dynamically added textareas too)
+document.addEventListener('input', function(e) {
+    if (!e.target.classList.contains('prompt-ta')) return;
+    activeTa = e.target;
+    var val    = e.target.value;
+    var cursor = e.target.selectionStart;
+    var before = val.substring(0, cursor);
+    var m = before.match(/#([a-zA-Z0-9_ ]*)$/);
+    if (m) {
+        hashStart = cursor - m[0].length;
+        var q = m[1].toLowerCase();
+        var filtered = ALL_COLUMNS.filter(function(c) {
+            return c.toLowerCase().indexOf(q) !== -1;
+        });
+        showPicker(e.target, filtered);
+    } else {
+        hidePicker();
+    }
+});
+
+document.addEventListener('keydown', function(e) {
+    if (picker.style.display === 'none') return;
+    if (e.key === 'Escape') { hidePicker(); return; }
+    if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        pickerIdx = Math.min(pickerIdx + 1, pickerCols.length - 1);
+        highlightPicker(pickerIdx);
+    } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        pickerIdx = Math.max(pickerIdx - 1, 0);
+        highlightPicker(pickerIdx);
+    } else if ((e.key === 'Enter' || e.key === 'Tab') && pickerIdx >= 0) {
+        e.preventDefault();
+        insertCol(pickerCols[pickerIdx]);
+    }
+});
+
+picker.addEventListener('click', function(e) {
+    var item = e.target.closest('.picker-item');
+    if (item) insertCol(item.dataset.col);
+});
+
+picker.addEventListener('mouseover', function(e) {
+    var item = e.target.closest('.picker-item');
+    if (item) {
+        pickerIdx = parseInt(item.dataset.idx, 10);
+        highlightPicker(pickerIdx);
+    }
+});
+
+document.addEventListener('click', function(e) {
+    if (!picker.contains(e.target) && !e.target.classList.contains('prompt-ta')) {
+        hidePicker();
+    }
+});
 </script>
 
 {% endblock %}

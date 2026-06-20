@@ -164,13 +164,23 @@
     }
 
     async function testConnection() {
+        const host  = document.getElementById('inp-host').value.trim();
+        const port  = document.getElementById('inp-port').value.trim();
         const resultEl = document.getElementById('test-result');
+
+        if (!host || !port) {
+            resultEl.className = 'rounded-md p-3 text-sm bg-yellow-50 dark:bg-yellow-900/30 text-yellow-700 dark:text-yellow-300 border border-yellow-200 dark:border-yellow-700';
+            resultEl.textContent = 'Enter a host and port first.';
+            resultEl.classList.remove('hidden');
+            return;
+        }
+
         resultEl.className = 'rounded-md p-3 text-sm bg-gray-100 dark:bg-gray-900 text-gray-500';
-        resultEl.textContent = 'Testing…';
+        resultEl.textContent = `Testing ${host}:${port}…`;
         resultEl.classList.remove('hidden');
 
         try {
-            const resp = await fetch("{% url 'test_connection' %}");
+            const resp = await fetch(`{% url 'test_connection' %}?host=${encodeURIComponent(host)}&port=${encodeURIComponent(port)}`);
             const data = await resp.json();
             if (data.success) {
                 const modelList = data.models.length ? data.models.join(', ') : '(none listed)';
