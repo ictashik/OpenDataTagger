@@ -13,10 +13,10 @@
     <form method="post" class="space-y-6" id="main-form">
         {% csrf_token %}
 
-        <!-- ── Step 1: Input Context ── -->
+        <!-- ── Step 1: Global Input Context ── -->
         <div class="bg-white dark:bg-gray-800 rounded-lg shadow p-6">
             <div class="flex items-center justify-between mb-1">
-                <h2 class="text-base font-semibold text-gray-800 dark:text-gray-100">1. Input Context Columns</h2>
+                <h2 class="text-base font-semibold text-gray-800 dark:text-gray-100">1. Global Context Columns</h2>
                 <div class="flex gap-2 text-xs">
                     <button type="button" id="select-all-btn"
                         class="text-indigo-500 hover:text-indigo-700 dark:hover:text-indigo-300 font-medium">Select all</button>
@@ -26,7 +26,7 @@
                 </div>
             </div>
             <p class="text-xs text-gray-500 dark:text-gray-400 mb-4">
-                Only selected columns are sent to the AI. Click chips to toggle.
+                First-pass filter — only selected columns enter the pipeline. Each tag can then narrow further.
             </p>
 
             <div class="flex flex-wrap gap-2" id="chip-container">
@@ -54,10 +54,9 @@
                 <div>
                     <h2 class="text-base font-semibold text-gray-800 dark:text-gray-100">2. Output Tags &amp; Prompts</h2>
                     <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
-                        Define what the AI should generate per row. Type
+                        Tags run <strong>in order</strong>. Type
                         <kbd class="bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5 rounded text-xs font-mono">#</kbd>
-                        in a prompt to pick a column — it inserts <code class="bg-gray-100 dark:bg-gray-700 px-1 rounded text-xs">{ColumnName}</code>
-                        which is replaced with each row's actual value before sending.
+                        to insert a column reference. Each tag has its own context columns — use <strong>Auto</strong> to detect from prompt references.
                     </p>
                 </div>
                 <button type="button" id="add-tag-btn"
@@ -68,61 +67,176 @@
 
             <div id="tag-container" class="space-y-4">
                 {% for entry in config_data %}
-                <div class="tag-card border border-gray-200 dark:border-gray-700 rounded-lg p-4 space-y-3 bg-gray-50 dark:bg-gray-900">
-                    <div class="flex items-end gap-3">
-                        <div class="flex-1">
-                            <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Output Column Name</label>
-                            <input type="text" name="output_column"
-                                class="w-full px-3 py-2 rounded-md border border-gray-300 dark:border-gray-600
-                                       bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 text-sm
-                                       focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                                value="{{ entry.OutputColumn }}"
-                                placeholder="e.g. is_vegetarian" required>
-                        </div>
-                        <button type="button" class="remove-btn text-xs text-red-400 hover:text-red-600 font-medium px-2 py-2 mb-0.5">
-                            Remove
-                        </button>
+                {% with has_cond=entry.ConditionField %}
+                <div class="tag-card border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden bg-gray-50 dark:bg-gray-900"
+                     data-saved-cols="{{ entry.InputColumns }}">
+                    <!-- Card header -->
+                    <div class="flex items-center gap-3 px-4 py-3 border-b border-gray-200 dark:border-gray-700">
+                        <span class="card-badge flex-shrink-0 text-xs font-mono text-indigo-400 bg-indigo-50 dark:bg-indigo-900/30 border border-indigo-200 dark:border-indigo-700 px-2 py-0.5 rounded">Step</span>
+                        <input type="text" name="output_column"
+                            class="flex-1 px-3 py-1.5 rounded-md border border-gray-300 dark:border-gray-600
+                                   bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 text-sm font-medium
+                                   focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                            value="{{ entry.OutputColumn }}"
+                            placeholder="output_column_name" required>
+                        <button type="button" class="remove-btn text-xs text-red-400 hover:text-red-600 font-medium px-2">Remove</button>
                     </div>
-                    <div>
+                    <!-- Per-tag context columns -->
+                    <div class="px-4 py-3 bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
+                        <div class="flex items-center justify-between mb-2">
+                            <span class="text-xs font-medium text-gray-500 dark:text-gray-400">Tag Context Columns</span>
+                            <div class="flex gap-3 text-xs">
+                                <button type="button" class="tag-auto-btn text-indigo-400 hover:text-indigo-600 font-medium">Auto from prompt</button>
+                                <button type="button" class="tag-all-btn text-gray-400 hover:text-gray-600 font-medium">All</button>
+                                <button type="button" class="tag-none-btn text-gray-400 hover:text-gray-600 font-medium">None</button>
+                            </div>
+                        </div>
+                        <div class="flex flex-wrap gap-1.5 tag-col-chips min-h-[28px]"></div>
+                        <input type="hidden" name="tag_input_cols" class="tag-cols-hidden" value="{{ entry.InputColumns }}">
+                    </div>
+                    <!-- Condition builder -->
+                    <div class="px-4 py-3 bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
+                        <label class="flex items-center gap-2 cursor-pointer select-none">
+                            <input type="checkbox" class="cond-toggle rounded accent-indigo-500" {% if has_cond %}checked{% endif %}>
+                            <span class="text-xs font-medium text-gray-500 dark:text-gray-400">Conditional — only run if:</span>
+                        </label>
+                        <div class="cond-builder mt-3 space-y-2" {% if not has_cond %}style="display:none"{% endif %}>
+                            <div class="flex flex-wrap items-center gap-2">
+                                <input type="text" name="condition_field" list="col-datalist"
+                                    class="px-2 py-1.5 rounded border border-gray-300 dark:border-gray-600 text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 w-40 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                                    placeholder="column name" value="{{ entry.ConditionField }}">
+                                <select name="condition_op"
+                                    class="px-2 py-1.5 rounded border border-gray-300 dark:border-gray-600 text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-1 focus:ring-indigo-500">
+                                    <option value="==" {% if entry.ConditionOp == '==' %}selected{% endif %}>equals</option>
+                                    <option value="!=" {% if entry.ConditionOp == '!=' %}selected{% endif %}>not equals</option>
+                                    <option value="contains" {% if entry.ConditionOp == 'contains' %}selected{% endif %}>contains</option>
+                                    <option value="not_contains" {% if entry.ConditionOp == 'not_contains' %}selected{% endif %}>not contains</option>
+                                    <option value="is_empty" {% if entry.ConditionOp == 'is_empty' %}selected{% endif %}>is empty</option>
+                                    <option value="is_not_empty" {% if entry.ConditionOp == 'is_not_empty' %}selected{% endif %}>is not empty</option>
+                                </select>
+                                <input type="text" name="condition_value"
+                                    class="px-2 py-1.5 rounded border border-gray-300 dark:border-gray-600 text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 w-28 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                                    placeholder="value" value="{{ entry.ConditionValue }}">
+                            </div>
+                            <div class="flex items-center gap-2">
+                                <span class="text-xs text-gray-400 whitespace-nowrap">Otherwise write:</span>
+                                <input type="text" name="default_value"
+                                    class="px-2 py-1.5 rounded border border-gray-300 dark:border-gray-600 text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 flex-1 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                                    placeholder="N/A" value="{{ entry.DefaultValue }}">
+                            </div>
+                        </div>
+                        <div class="cond-builder mt-2" {% if not has_cond %}style="display:none"{% endif %}>
+                            <label class="flex items-center gap-2 cursor-pointer select-none">
+                                <input type="checkbox" class="send-ctx-cb rounded accent-indigo-500"
+                                    {% if entry.SendContext == '1' %}checked{% endif %}>
+                                <span class="text-xs text-gray-500 dark:text-gray-400">
+                                    Include full context of the condition column in the prompt
+                                    <span class="text-gray-400">(prompt + answer + explanation)</span>
+                                </span>
+                            </label>
+                        </div>
+                        <input type="hidden" class="send-ctx-hidden" name="send_context" value="{{ entry.SendContext|default:'0' }}">
+                        <input type="hidden" class="cond-field-hidden" name="condition_field" {% if has_cond %}disabled{% endif %} value="">
+                        <input type="hidden" class="cond-op-hidden"    name="condition_op"    {% if has_cond %}disabled{% endif %} value="==">
+                        <input type="hidden" class="cond-val-hidden"   name="condition_value" {% if has_cond %}disabled{% endif %} value="">
+                        <input type="hidden" class="cond-def-hidden"   name="default_value"   {% if has_cond %}disabled{% endif %} value="">
+                    </div>
+                    <!-- Prompt -->
+                    <div class="px-4 py-3">
                         <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">
                             Prompt Template
                             <span class="font-normal text-gray-400 ml-1">— type # to insert a column</span>
                         </label>
-                        <textarea name="prompt_template" rows="5"
+                        <textarea name="prompt_template" rows="4"
                             class="prompt-ta w-full px-3 py-2 rounded-md border border-gray-300 dark:border-gray-600
                                    bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 text-sm
                                    focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-y font-mono leading-relaxed"
-                            placeholder="e.g. Is {FoodName} vegetarian? Reply with exactly: Yes or No"
+                            placeholder="e.g. Is {FoodName} vegetarian? Reply: Yes or No"
                             required>{{ entry.PromptTemplate }}</textarea>
                     </div>
                 </div>
+                {% endwith %}
                 {% endfor %}
 
                 {% if not config_data %}
-                <div class="tag-card border border-gray-200 dark:border-gray-700 rounded-lg p-4 space-y-3 bg-gray-50 dark:bg-gray-900">
-                    <div class="flex items-end gap-3">
-                        <div class="flex-1">
-                            <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Output Column Name</label>
-                            <input type="text" name="output_column"
-                                class="w-full px-3 py-2 rounded-md border border-gray-300 dark:border-gray-600
-                                       bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 text-sm
-                                       focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                                placeholder="e.g. is_vegetarian" required>
-                        </div>
-                        <button type="button" class="remove-btn text-xs text-red-400 hover:text-red-600 font-medium px-2 py-2 mb-0.5">
-                            Remove
-                        </button>
+                <div class="tag-card border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden bg-gray-50 dark:bg-gray-900"
+                     data-saved-cols="">
+                    <div class="flex items-center gap-3 px-4 py-3 border-b border-gray-200 dark:border-gray-700">
+                        <span class="card-badge flex-shrink-0 text-xs font-mono text-indigo-400 bg-indigo-50 dark:bg-indigo-900/30 border border-indigo-200 dark:border-indigo-700 px-2 py-0.5 rounded">Step</span>
+                        <input type="text" name="output_column"
+                            class="flex-1 px-3 py-1.5 rounded-md border border-gray-300 dark:border-gray-600
+                                   bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 text-sm font-medium
+                                   focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                            placeholder="output_column_name" required>
+                        <button type="button" class="remove-btn text-xs text-red-400 hover:text-red-600 font-medium px-2">Remove</button>
                     </div>
-                    <div>
+                    <div class="px-4 py-3 bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
+                        <div class="flex items-center justify-between mb-2">
+                            <span class="text-xs font-medium text-gray-500 dark:text-gray-400">Tag Context Columns</span>
+                            <div class="flex gap-3 text-xs">
+                                <button type="button" class="tag-auto-btn text-indigo-400 hover:text-indigo-600 font-medium">Auto from prompt</button>
+                                <button type="button" class="tag-all-btn text-gray-400 hover:text-gray-600 font-medium">All</button>
+                                <button type="button" class="tag-none-btn text-gray-400 hover:text-gray-600 font-medium">None</button>
+                            </div>
+                        </div>
+                        <div class="flex flex-wrap gap-1.5 tag-col-chips min-h-[28px]"></div>
+                        <input type="hidden" name="tag_input_cols" class="tag-cols-hidden" value="">
+                    </div>
+                    <div class="px-4 py-3 bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
+                        <label class="flex items-center gap-2 cursor-pointer select-none">
+                            <input type="checkbox" class="cond-toggle rounded accent-indigo-500">
+                            <span class="text-xs font-medium text-gray-500 dark:text-gray-400">Conditional — only run if:</span>
+                        </label>
+                        <div class="cond-builder mt-3 space-y-2" style="display:none">
+                            <div class="flex flex-wrap items-center gap-2">
+                                <input type="text" name="condition_field" list="col-datalist"
+                                    class="px-2 py-1.5 rounded border border-gray-300 dark:border-gray-600 text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 w-40 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                                    placeholder="column name">
+                                <select name="condition_op"
+                                    class="px-2 py-1.5 rounded border border-gray-300 dark:border-gray-600 text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-1 focus:ring-indigo-500">
+                                    <option value="==">equals</option>
+                                    <option value="!=">not equals</option>
+                                    <option value="contains">contains</option>
+                                    <option value="not_contains">not contains</option>
+                                    <option value="is_empty">is empty</option>
+                                    <option value="is_not_empty">is not empty</option>
+                                </select>
+                                <input type="text" name="condition_value"
+                                    class="px-2 py-1.5 rounded border border-gray-300 dark:border-gray-600 text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 w-28 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                                    placeholder="value">
+                            </div>
+                            <div class="flex items-center gap-2">
+                                <span class="text-xs text-gray-400 whitespace-nowrap">Otherwise write:</span>
+                                <input type="text" name="default_value"
+                                    class="px-2 py-1.5 rounded border border-gray-300 dark:border-gray-600 text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 flex-1 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                                    placeholder="N/A">
+                            </div>
+                        </div>
+                        <div class="cond-builder mt-2" style="display:none">
+                            <label class="flex items-center gap-2 cursor-pointer select-none">
+                                <input type="checkbox" class="send-ctx-cb rounded accent-indigo-500">
+                                <span class="text-xs text-gray-500 dark:text-gray-400">
+                                    Include full context of the condition column in the prompt
+                                    <span class="text-gray-400">(prompt + answer + explanation)</span>
+                                </span>
+                            </label>
+                        </div>
+                        <input type="hidden" class="send-ctx-hidden" name="send_context" value="0">
+                        <input type="hidden" class="cond-field-hidden" name="condition_field" value="">
+                        <input type="hidden" class="cond-op-hidden"    name="condition_op"    value="==">
+                        <input type="hidden" class="cond-val-hidden"   name="condition_value" value="">
+                        <input type="hidden" class="cond-def-hidden"   name="default_value"   value="">
+                    </div>
+                    <div class="px-4 py-3">
                         <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">
                             Prompt Template
                             <span class="font-normal text-gray-400 ml-1">— type # to insert a column</span>
                         </label>
-                        <textarea name="prompt_template" rows="5"
+                        <textarea name="prompt_template" rows="4"
                             class="prompt-ta w-full px-3 py-2 rounded-md border border-gray-300 dark:border-gray-600
                                    bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 text-sm
                                    focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-y font-mono leading-relaxed"
-                            placeholder="e.g. Is {FoodName} vegetarian? Reply with exactly: Yes or No"
+                            placeholder="e.g. Is {FoodName} vegetarian? Reply: Yes or No"
                             required></textarea>
                     </div>
                 </div>
@@ -137,6 +251,11 @@
     </form>
 </div>
 
+<!-- Datalist for condition field autocomplete -->
+<datalist id="col-datalist">
+    {% for column in columns %}<option value="{{ column }}">{% endfor %}
+</datalist>
+
 <!-- Column picker dropdown -->
 <div id="col-picker"
      style="display:none; position:fixed; z-index:9999;"
@@ -149,144 +268,328 @@
 <script>
 var ALL_COLUMNS = JSON.parse(document.getElementById('columns-data').textContent || '[]');
 
-/* ═══════════════════════════════════════
-   CHIP TOGGLE
-═══════════════════════════════════════ */
+/* ═══ Helpers ═══════════════════════════════════════════════════ */
+function escHtml(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function escAttr(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;');
+}
+
+/* ═══ Global chip toggle ════════════════════════════════════════ */
 function applyChipStyle(cb) {
     var span = cb.nextElementSibling;
     if (!span) return;
-    if (cb.checked) {
-        span.style.cssText = 'background:#4f46e5;border-color:#4f46e5;color:#fff;';
-    } else {
-        span.style.cssText = 'background:transparent;border-color:#d1d5db;color:#6b7280;';
-    }
+    span.style.cssText = cb.checked
+        ? 'background:#4f46e5;border-color:#4f46e5;color:#fff;'
+        : 'background:transparent;border-color:#d1d5db;color:#6b7280;';
 }
 
 function updateSelCount() {
-    var n = document.querySelectorAll('.chip-cb:checked').length;
-    document.getElementById('sel-count').textContent = n;
+    document.getElementById('sel-count').textContent =
+        document.querySelectorAll('.chip-cb:checked').length;
 }
 
-// Init all chips
 document.querySelectorAll('.chip-cb').forEach(function(cb) {
     applyChipStyle(cb);
-    cb.addEventListener('change', function() {
-        applyChipStyle(cb);
-        updateSelCount();
-    });
+    cb.addEventListener('change', function() { applyChipStyle(cb); updateSelCount(); });
 });
 updateSelCount();
 
-// Select all / clear all
 document.getElementById('select-all-btn').addEventListener('click', function() {
-    document.querySelectorAll('.chip-cb').forEach(function(cb) {
-        cb.checked = true;
-        applyChipStyle(cb);
-    });
+    document.querySelectorAll('.chip-cb').forEach(function(cb) { cb.checked = true; applyChipStyle(cb); });
     updateSelCount();
 });
-
 document.getElementById('clear-all-btn').addEventListener('click', function() {
-    document.querySelectorAll('.chip-cb').forEach(function(cb) {
-        cb.checked = false;
-        applyChipStyle(cb);
-    });
+    document.querySelectorAll('.chip-cb').forEach(function(cb) { cb.checked = false; applyChipStyle(cb); });
     updateSelCount();
 });
 
-/* ═══════════════════════════════════════
-   ADD / REMOVE TAG CARDS
-═══════════════════════════════════════ */
+/* ═══ Per-tag context column chips ═════════════════════════════ */
+
+function getAvailableColsForCard(cardIdx) {
+    var cards = Array.from(document.querySelectorAll('.tag-card'));
+    var priorOutputs = [];
+    for (var j = 0; j < cardIdx; j++) {
+        var nameInput = cards[j].querySelector('input[name="output_column"]');
+        if (nameInput && nameInput.value.trim()) priorOutputs.push(nameInput.value.trim());
+    }
+    return ALL_COLUMNS.concat(priorOutputs);
+}
+
+function applyTagChipStyle(cb) {
+    var span = cb.nextElementSibling;
+    if (!span) return;
+    span.style.cssText = cb.checked
+        ? 'background:#4f46e5;border-color:#4f46e5;color:#fff;padding:2px 8px;border-radius:9999px;font-size:11px;border-width:1px;'
+        : 'background:transparent;border-color:#d1d5db;color:#6b7280;padding:2px 8px;border-radius:9999px;font-size:11px;border-width:1px;';
+}
+
+function updateTagColsHidden(card) {
+    var hidden   = card.querySelector('.tag-cols-hidden');
+    if (!hidden) return;
+    var allCbs   = card.querySelectorAll('.tag-chip-cb');
+    var checked  = [];
+    allCbs.forEach(function(cb) { if (cb.checked) checked.push(cb.dataset.col); });
+    // Empty string = "use all context" (fall-through behaviour)
+    hidden.value = (checked.length === allCbs.length || allCbs.length === 0) ? '' : checked.join(',');
+}
+
+function rebuildTagChips(card) {
+    var cards   = Array.from(document.querySelectorAll('.tag-card'));
+    var idx     = cards.indexOf(card);
+    var avail   = getAvailableColsForCard(idx);
+    var hidden  = card.querySelector('.tag-cols-hidden');
+    var saved   = hidden ? hidden.value.trim() : '';
+    var savedSet = saved ? saved.split(',').map(function(s){return s.trim();}) : null;
+
+    var container = card.querySelector('.tag-col-chips');
+    if (!container) return;
+
+    var html = '';
+    avail.forEach(function(col) {
+        var checked = !savedSet || savedSet.indexOf(col) !== -1;
+        html += '<label class="cursor-pointer select-none" style="display:inline-flex;align-items:center;">';
+        html += '<input type="checkbox" class="tag-chip-cb" data-col="' + escAttr(col) + '" style="display:none"' + (checked ? ' checked' : '') + '>';
+        html += '<span style="' + (checked
+            ? 'background:#4f46e5;border-color:#4f46e5;color:#fff;'
+            : 'background:transparent;border-color:#d1d5db;color:#6b7280;')
+            + 'padding:2px 8px;border-radius:9999px;font-size:11px;border-width:1px;border-style:solid;transition:all 0.1s;cursor:pointer;">'
+            + escHtml(col) + '</span>';
+        html += '</label>';
+    });
+    container.innerHTML = html;
+    updateTagColsHidden(card);
+}
+
+function autoDetectCols(card) {
+    var ta = card.querySelector('.prompt-ta');
+    if (!ta) return;
+    var re = /\{([^}]+)\}/g, m, hits = {};
+    while ((m = re.exec(ta.value)) !== null) hits[m[1]] = true;
+
+    card.querySelectorAll('.tag-chip-cb').forEach(function(cb) {
+        cb.checked = !!hits[cb.dataset.col];
+        applyTagChipStyle(cb);
+    });
+    updateTagColsHidden(card);
+}
+
+/* ═══ Add / Remove cards ════════════════════════════════════════ */
 function makeTagCard() {
     var div = document.createElement('div');
-    div.className = 'tag-card border border-gray-200 dark:border-gray-700 rounded-lg p-4 space-y-3 bg-gray-50 dark:bg-gray-900';
-    // Build HTML without template literals to avoid any parsing surprises
-    var html = '';
-    html += '<div class="flex items-end gap-3">';
-    html += '  <div class="flex-1">';
-    html += '    <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Output Column Name</label>';
-    html += '    <input type="text" name="output_column"';
-    html += '           class="w-full px-3 py-2 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"';
-    html += '           placeholder="e.g. sentiment" required>';
-    html += '  </div>';
-    html += '  <button type="button" class="remove-btn text-xs text-red-400 hover:text-red-600 font-medium px-2 py-2 mb-0.5">Remove</button>';
-    html += '</div>';
-    html += '<div>';
-    html += '  <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">';
-    html += '    Prompt Template <span class="font-normal text-gray-400 ml-1">— type # to insert a column</span>';
-    html += '  </label>';
-    html += '  <textarea name="prompt_template" rows="5"';
-    html += '    class="prompt-ta w-full px-3 py-2 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-y font-mono leading-relaxed"';
-    html += '    placeholder="e.g. Classify the tone of: {ReviewText}. Reply: Positive, Negative, or Neutral"';
-    html += '    required></textarea>';
-    html += '</div>';
-    div.innerHTML = html;
+    div.className = 'tag-card border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden bg-gray-50 dark:bg-gray-900';
+    div.dataset.savedCols = '';
+    var ops = ['==:equals','!=:not equals','contains:contains','not_contains:not contains','is_empty:is empty','is_not_empty:is not empty'];
+    var opHtml = ops.map(function(o){var p=o.split(':');return '<option value="'+p[0]+'">'+p[1]+'</option>';}).join('');
+    var h = '';
+    // Header
+    h += '<div class="flex items-center gap-3 px-4 py-3 border-b border-gray-200 dark:border-gray-700">';
+    h += '  <span class="card-badge flex-shrink-0 text-xs font-mono text-indigo-400 bg-indigo-50 dark:bg-indigo-900/30 border border-indigo-200 dark:border-indigo-700 px-2 py-0.5 rounded">Step</span>';
+    h += '  <input type="text" name="output_column" class="flex-1 px-3 py-1.5 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-indigo-500" placeholder="output_column_name" required>';
+    h += '  <button type="button" class="remove-btn text-xs text-red-400 hover:text-red-600 font-medium px-2">Remove</button>';
+    h += '</div>';
+    // Per-tag context columns
+    h += '<div class="px-4 py-3 bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">';
+    h += '  <div class="flex items-center justify-between mb-2">';
+    h += '    <span class="text-xs font-medium text-gray-500 dark:text-gray-400">Tag Context Columns</span>';
+    h += '    <div class="flex gap-3 text-xs">';
+    h += '      <button type="button" class="tag-auto-btn text-indigo-400 hover:text-indigo-600 font-medium">Auto from prompt</button>';
+    h += '      <button type="button" class="tag-all-btn text-gray-400 hover:text-gray-600 font-medium">All</button>';
+    h += '      <button type="button" class="tag-none-btn text-gray-400 hover:text-gray-600 font-medium">None</button>';
+    h += '    </div>';
+    h += '  </div>';
+    h += '  <div class="flex flex-wrap gap-1.5 tag-col-chips min-h-[28px]"></div>';
+    h += '  <input type="hidden" name="tag_input_cols" class="tag-cols-hidden" value="">';
+    h += '</div>';
+    // Condition builder
+    h += '<div class="px-4 py-3 bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">';
+    h += '  <label class="flex items-center gap-2 cursor-pointer select-none">';
+    h += '    <input type="checkbox" class="cond-toggle rounded accent-indigo-500">';
+    h += '    <span class="text-xs font-medium text-gray-500 dark:text-gray-400">Conditional — only run if:</span>';
+    h += '  </label>';
+    h += '  <div class="cond-builder mt-3 space-y-2" style="display:none">';
+    h += '    <div class="flex flex-wrap items-center gap-2">';
+    h += '      <input type="text" name="condition_field" list="col-datalist" class="px-2 py-1.5 rounded border border-gray-300 dark:border-gray-600 text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 w-40 focus:outline-none focus:ring-1 focus:ring-indigo-500" placeholder="column name">';
+    h += '      <select name="condition_op" class="px-2 py-1.5 rounded border border-gray-300 dark:border-gray-600 text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-1 focus:ring-indigo-500">' + opHtml + '</select>';
+    h += '      <input type="text" name="condition_value" class="px-2 py-1.5 rounded border border-gray-300 dark:border-gray-600 text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 w-28 focus:outline-none focus:ring-1 focus:ring-indigo-500" placeholder="value">';
+    h += '    </div>';
+    h += '    <div class="flex items-center gap-2">';
+    h += '      <span class="text-xs text-gray-400 whitespace-nowrap">Otherwise write:</span>';
+    h += '      <input type="text" name="default_value" class="px-2 py-1.5 rounded border border-gray-300 dark:border-gray-600 text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 flex-1 focus:outline-none focus:ring-1 focus:ring-indigo-500" placeholder="N/A">';
+    h += '    </div>';
+    h += '  </div>';
+    h += '  <div class="cond-builder mt-2" style="display:none">';
+    h += '    <label class="flex items-center gap-2 cursor-pointer select-none">';
+    h += '      <input type="checkbox" class="send-ctx-cb rounded accent-indigo-500">';
+    h += '      <span class="text-xs text-gray-500 dark:text-gray-400">Include full context of the condition column in the prompt <span class="text-gray-400">(prompt + answer + explanation)</span></span>';
+    h += '    </label>';
+    h += '  </div>';
+    h += '  <input type="hidden" class="send-ctx-hidden" name="send_context" value="0">';
+    h += '  <input type="hidden" class="cond-field-hidden" name="condition_field" value="">';
+    h += '  <input type="hidden" class="cond-op-hidden"    name="condition_op"    value="==">';
+    h += '  <input type="hidden" class="cond-val-hidden"   name="condition_value" value="">';
+    h += '  <input type="hidden" class="cond-def-hidden"   name="default_value"   value="">';
+    h += '</div>';
+    // Prompt
+    h += '<div class="px-4 py-3">';
+    h += '  <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Prompt Template <span class="font-normal text-gray-400 ml-1">— type # to insert a column</span></label>';
+    h += '  <textarea name="prompt_template" rows="4" class="prompt-ta w-full px-3 py-2 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-y font-mono leading-relaxed" placeholder="e.g. Estimate a new weight for {item}. Reply with a number in kg." required></textarea>';
+    h += '</div>';
+    div.innerHTML = h;
     return div;
 }
 
+function refreshCardBadges() {
+    document.querySelectorAll('.tag-card').forEach(function(card, idx) {
+        var badge = card.querySelector('.card-badge');
+        if (badge) badge.textContent = 'Step ' + (idx + 1);
+    });
+}
+
 document.getElementById('add-tag-btn').addEventListener('click', function() {
-    document.getElementById('tag-container').appendChild(makeTagCard());
+    var newCard = makeTagCard();
+    document.getElementById('tag-container').appendChild(newCard);
+    refreshCardBadges();
+    rebuildTagChips(newCard);
 });
 
-// Remove card — delegated on the container
-document.getElementById('tag-container').addEventListener('click', function(e) {
-    var btn = e.target.closest('.remove-btn');
-    if (!btn) return;
-    var cards = document.querySelectorAll('.tag-card');
-    if (cards.length > 1) {
-        btn.closest('.tag-card').remove();
+/* ═══ Datalist (condition field autocomplete) ═══════════════════ */
+function rebuildDatalist() {
+    var list = document.getElementById('col-datalist');
+    if (!list) return;
+    var seen = {}, opts = '';
+    ALL_COLUMNS.forEach(function(c) { seen[c] = true; opts += '<option value="' + escAttr(c) + '">'; });
+    document.querySelectorAll('input[name="output_column"]').forEach(function(inp) {
+        var v = inp.value.trim();
+        if (v && !seen[v]) { seen[v] = true; opts += '<option value="' + escAttr(v) + '">'; }
+    });
+    list.innerHTML = opts;
+}
+
+/* ═══ Container-level event delegation ══════════════════════════ */
+document.getElementById('tag-container').addEventListener('input', function(e) {
+    if (e.target.name === 'output_column') {
+        rebuildDatalist();
+        // Rebuild chips only for cards after the changed one (their available cols changed)
+        var cards       = Array.from(document.querySelectorAll('.tag-card'));
+        var changedCard = e.target.closest('.tag-card');
+        var changedIdx  = cards.indexOf(changedCard);
+        for (var i = changedIdx + 1; i < cards.length; i++) rebuildTagChips(cards[i]);
     }
 });
 
-/* ═══════════════════════════════════════
-   # COLUMN PICKER
-═══════════════════════════════════════ */
+document.getElementById('tag-container').addEventListener('change', function(e) {
+    var card = e.target.closest('.tag-card');
+    if (!card) return;
+
+    // Per-tag chip toggled
+    if (e.target.classList.contains('tag-chip-cb')) {
+        applyTagChipStyle(e.target);
+        updateTagColsHidden(card);
+        return;
+    }
+
+    // Condition toggle
+    if (e.target.classList.contains('cond-toggle')) {
+        var builders = card.querySelectorAll('.cond-builder');
+        var hiddens  = card.querySelectorAll('.cond-field-hidden, .cond-op-hidden, .cond-val-hidden, .cond-def-hidden');
+        var visibles = card.querySelectorAll('.cond-builder input:not(.send-ctx-cb), .cond-builder select');
+        if (e.target.checked) {
+            builders.forEach(function(b) { b.style.display = 'block'; });
+            hiddens.forEach(function(h) { h.disabled = true; });
+            visibles.forEach(function(v) { v.disabled = false; });
+            var scCb = card.querySelector('.send-ctx-cb');
+            if (scCb) scCb.disabled = false;
+        } else {
+            builders.forEach(function(b) { b.style.display = 'none'; });
+            hiddens.forEach(function(h) { h.disabled = false; });
+            visibles.forEach(function(v) { v.disabled = true; });
+            var scHidden = card.querySelector('.send-ctx-hidden');
+            if (scHidden) scHidden.value = '0';
+        }
+    }
+
+    // Send-context checkbox
+    if (e.target.classList.contains('send-ctx-cb')) {
+        var hidden = card.querySelector('.send-ctx-hidden');
+        if (hidden) hidden.value = e.target.checked ? '1' : '0';
+    }
+});
+
+document.getElementById('tag-container').addEventListener('click', function(e) {
+    var card = e.target.closest('.tag-card');
+    if (!card) return;
+
+    if (e.target.closest('.remove-btn')) {
+        if (document.querySelectorAll('.tag-card').length > 1) {
+            card.remove();
+            refreshCardBadges();
+            // Rebuild chips for remaining cards (available cols may have changed)
+            document.querySelectorAll('.tag-card').forEach(rebuildTagChips);
+        }
+        return;
+    }
+    if (e.target.closest('.tag-auto-btn')) { autoDetectCols(card); return; }
+    if (e.target.closest('.tag-all-btn')) {
+        card.querySelectorAll('.tag-chip-cb').forEach(function(cb) { cb.checked = true; applyTagChipStyle(cb); });
+        updateTagColsHidden(card);
+        return;
+    }
+    if (e.target.closest('.tag-none-btn')) {
+        card.querySelectorAll('.tag-chip-cb').forEach(function(cb) { cb.checked = false; applyTagChipStyle(cb); });
+        updateTagColsHidden(card);
+        return;
+    }
+});
+
+/* ═══ # Column picker ═══════════════════════════════════════════ */
 var picker     = document.getElementById('col-picker');
 var activeTa   = null;
 var hashStart  = -1;
 var pickerCols = [];
 var pickerIdx  = -1;
 
+function availableColumns(ta) {
+    var cards  = Array.from(document.querySelectorAll('.tag-card'));
+    var taCard = ta.closest('.tag-card');
+    var taIdx  = cards.indexOf(taCard);
+    var prior  = [];
+    for (var j = 0; j < taIdx; j++) {
+        var inp = cards[j].querySelector('input[name="output_column"]');
+        if (inp && inp.value.trim()) prior.push(inp.value.trim());
+    }
+    return ALL_COLUMNS.concat(prior);
+}
+
 function buildPickerHTML(cols) {
     return cols.map(function(c, i) {
-        return '<div class="picker-item" data-idx="' + i + '" data-col="' + c + '" '
+        return '<div class="picker-item" data-idx="' + i + '" data-col="' + escAttr(c) + '" '
              + 'style="padding:6px 12px;cursor:pointer;color:#374151;">'
-             + '<span style="color:#6366f1">{</span>' + c + '<span style="color:#6366f1">}</span>'
+             + '<span style="color:#6366f1">{</span>' + escHtml(c) + '<span style="color:#6366f1">}</span>'
              + '</div>';
     }).join('');
 }
 
 function showPicker(ta, cols) {
     if (!cols.length) { hidePicker(); return; }
-    pickerCols = cols;
-    pickerIdx  = -1;
+    pickerCols = cols; pickerIdx = -1;
     picker.innerHTML = buildPickerHTML(cols);
     picker.style.width = Math.max(200, ta.offsetWidth * 0.55) + 'px';
     var rect = ta.getBoundingClientRect();
     picker.style.top  = (rect.bottom + window.pageYOffset + 4) + 'px';
-    picker.style.left = (rect.left  + window.pageXOffset) + 'px';
+    picker.style.left = (rect.left + window.pageXOffset) + 'px';
     picker.style.display = 'block';
 }
-
-function hidePicker() {
-    picker.style.display = 'none';
-    activeTa  = null;
-    hashStart = -1;
-    pickerIdx = -1;
-}
-
+function hidePicker() { picker.style.display = 'none'; activeTa = null; hashStart = -1; pickerIdx = -1; }
 function highlightPicker(idx) {
-    picker.querySelectorAll('.picker-item').forEach(function(el, i) {
-        el.style.background = (i === idx) ? '#eef2ff' : '';
-    });
+    picker.querySelectorAll('.picker-item').forEach(function(el, i) { el.style.background = (i === idx) ? '#eef2ff' : ''; });
 }
-
 function insertCol(colName) {
     if (!activeTa) return;
     var val    = activeTa.value;
-    var cursor = activeTa.selectionStart;
     var before = val.substring(0, hashStart);
-    var after  = val.substring(cursor);
+    var after  = val.substring(activeTa.selectionStart);
     var ins    = '{' + colName + '}';
     activeTa.value = before + ins + after;
     var pos = hashStart + ins.length;
@@ -295,20 +598,17 @@ function insertCol(colName) {
     hidePicker();
 }
 
-// Input delegation (covers dynamically added textareas too)
 document.addEventListener('input', function(e) {
     if (!e.target.classList.contains('prompt-ta')) return;
     activeTa = e.target;
     var val    = e.target.value;
     var cursor = e.target.selectionStart;
     var before = val.substring(0, cursor);
-    var m = before.match(/#([a-zA-Z0-9_ ]*)$/);
+    var m      = before.match(/#([a-zA-Z0-9_ ]*)$/);
     if (m) {
         hashStart = cursor - m[0].length;
         var q = m[1].toLowerCase();
-        var filtered = ALL_COLUMNS.filter(function(c) {
-            return c.toLowerCase().indexOf(q) !== -1;
-        });
+        var filtered = availableColumns(e.target).filter(function(c) { return c.toLowerCase().indexOf(q) !== -1; });
         showPicker(e.target, filtered);
     } else {
         hidePicker();
@@ -318,36 +618,36 @@ document.addEventListener('input', function(e) {
 document.addEventListener('keydown', function(e) {
     if (picker.style.display === 'none') return;
     if (e.key === 'Escape') { hidePicker(); return; }
-    if (e.key === 'ArrowDown') {
-        e.preventDefault();
-        pickerIdx = Math.min(pickerIdx + 1, pickerCols.length - 1);
-        highlightPicker(pickerIdx);
-    } else if (e.key === 'ArrowUp') {
-        e.preventDefault();
-        pickerIdx = Math.max(pickerIdx - 1, 0);
-        highlightPicker(pickerIdx);
-    } else if ((e.key === 'Enter' || e.key === 'Tab') && pickerIdx >= 0) {
-        e.preventDefault();
-        insertCol(pickerCols[pickerIdx]);
-    }
+    if (e.key === 'ArrowDown') { e.preventDefault(); pickerIdx = Math.min(pickerIdx + 1, pickerCols.length - 1); highlightPicker(pickerIdx); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); pickerIdx = Math.max(pickerIdx - 1, 0); highlightPicker(pickerIdx); }
+    else if ((e.key === 'Enter' || e.key === 'Tab') && pickerIdx >= 0) { e.preventDefault(); insertCol(pickerCols[pickerIdx]); }
 });
+picker.addEventListener('click', function(e) { var item = e.target.closest('.picker-item'); if (item) insertCol(item.dataset.col); });
+picker.addEventListener('mouseover', function(e) { var item = e.target.closest('.picker-item'); if (item) { pickerIdx = parseInt(item.dataset.idx, 10); highlightPicker(pickerIdx); } });
+document.addEventListener('click', function(e) { if (!picker.contains(e.target) && !e.target.classList.contains('prompt-ta')) hidePicker(); });
 
-picker.addEventListener('click', function(e) {
-    var item = e.target.closest('.picker-item');
-    if (item) insertCol(item.dataset.col);
-});
+/* ═══ Init ══════════════════════════════════════════════════════ */
+refreshCardBadges();
+rebuildDatalist();
 
-picker.addEventListener('mouseover', function(e) {
-    var item = e.target.closest('.picker-item');
-    if (item) {
-        pickerIdx = parseInt(item.dataset.idx, 10);
-        highlightPicker(pickerIdx);
-    }
-});
+// Build per-tag chips for all server-rendered cards
+document.querySelectorAll('.tag-card').forEach(function(card) {
+    rebuildTagChips(card);
 
-document.addEventListener('click', function(e) {
-    if (!picker.contains(e.target) && !e.target.classList.contains('prompt-ta')) {
-        hidePicker();
+    // Init condition toggle state
+    var toggle   = card.querySelector('.cond-toggle');
+    var hiddens  = card.querySelectorAll('.cond-field-hidden, .cond-op-hidden, .cond-val-hidden, .cond-def-hidden');
+    var visibles = card.querySelectorAll('.cond-builder input:not(.send-ctx-cb), .cond-builder select');
+    var scCb     = card.querySelector('.send-ctx-cb');
+    var scHidden = card.querySelector('.send-ctx-hidden');
+    if (!toggle) return;
+    if (toggle.checked) {
+        hiddens.forEach(function(h) { h.disabled = true; });
+        if (scCb) scCb.disabled = false;
+        if (scCb && scHidden) scHidden.value = scCb.checked ? '1' : '0';
+    } else {
+        visibles.forEach(function(v) { v.disabled = true; });
+        if (scCb) scCb.disabled = true;
     }
 });
 </script>

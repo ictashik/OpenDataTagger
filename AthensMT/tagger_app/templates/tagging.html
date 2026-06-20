@@ -19,8 +19,18 @@
         </div>
     </div>
 
+    <!-- Controls -->
+    <div class="w-full max-w-4xl mt-4 flex items-center gap-3">
+        <button id="pause-btn" onclick="togglePause()"
+            class="px-4 py-1.5 rounded-md border border-gray-600 text-sm text-gray-300 hover:bg-gray-700 transition hidden">
+            Pause
+        </button>
+        <span id="pause-status" class="text-xs text-yellow-400 hidden">Paused — LLM call in progress will finish first</span>
+        <a href="{% url 'home' %}" class="ml-auto text-xs text-gray-500 hover:text-gray-300">← Projects</a>
+    </div>
+
     <!-- Live log terminal -->
-    <div class="w-full max-w-4xl mt-6">
+    <div class="w-full max-w-4xl mt-4">
         <div class="flex items-center justify-between mb-2">
             <h3 class="text-sm font-semibold text-gray-300 uppercase tracking-wide">Live Logs</h3>
             <span id="log-count" class="text-xs text-gray-500">0 entries</span>
@@ -33,7 +43,8 @@
 </div>
 
 <script>
-var logsSeen = 0;   // cursor — number of log entries already rendered
+var logsSeen = 0;
+var isPaused = false;
 
 function appendLogs(logs) {
     var box   = document.getElementById('log-box');
@@ -41,7 +52,6 @@ function appendLogs(logs) {
 
     logs.forEach(function(log) {
         if (empty) { empty.remove(); empty = null; }
-
         var entry = document.createElement('div');
         entry.className = 'border-b border-gray-800 pb-2';
         entry.innerHTML =
@@ -51,16 +61,40 @@ function appendLogs(logs) {
             '<span class="text-blue-400"><i>Explanation:</i> ' + escHtml(log.explanation) + '</span>';
         box.appendChild(entry);
     });
-
-    if (logs.length) {
-        box.scrollTop = box.scrollHeight;
-    }
+    if (logs.length) box.scrollTop = box.scrollHeight;
 }
 
 function escHtml(s) {
     return String(s)
         .replace(/&/g,'&amp;').replace(/</g,'&lt;')
         .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function togglePause() {
+    var btn = document.getElementById('pause-btn');
+    var url = isPaused ? "{% url 'resume_tagging' %}" : "{% url 'pause_tagging' %}";
+    fetch(url, {method: 'POST', headers: {'X-CSRFToken': getCookie('csrftoken')}})
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            isPaused = data.paused;
+            updatePauseUI();
+        });
+}
+
+function updatePauseUI() {
+    var btn    = document.getElementById('pause-btn');
+    var status = document.getElementById('pause-status');
+    btn.textContent = isPaused ? 'Resume' : 'Pause';
+    btn.className   = isPaused
+        ? 'px-4 py-1.5 rounded-md border border-yellow-500 text-sm text-yellow-300 hover:bg-yellow-900/30 transition'
+        : 'px-4 py-1.5 rounded-md border border-gray-600 text-sm text-gray-300 hover:bg-gray-700 transition';
+    if (isPaused) status.classList.remove('hidden');
+    else          status.classList.add('hidden');
+}
+
+function getCookie(name) {
+    var v = document.cookie.match('(^|;)\\s*' + name + '\\s*=\\s*([^;]+)');
+    return v ? v.pop() : '';
 }
 
 function poll() {
@@ -80,7 +114,16 @@ function poll() {
             document.getElementById('progress-bar').style.width = pct + '%';
             document.getElementById('progress-pct').textContent  = pct + '%';
             document.getElementById('progress-label').textContent =
-                'Row ' + done + ' of ' + total + ' — ' + data.status;
+                (data.paused ? '[PAUSED] ' : '') + 'Row ' + done + ' of ' + total + ' — ' + data.status;
+
+            // Show pause button once we know we're running
+            document.getElementById('pause-btn').classList.remove('hidden');
+
+            // Sync pause state
+            if (data.paused !== isPaused) {
+                isPaused = data.paused;
+                updatePauseUI();
+            }
 
             if (data.logs && data.logs.length) {
                 appendLogs(data.logs);
@@ -90,9 +133,10 @@ function poll() {
 
             if (data.status === 'finished') {
                 document.getElementById('progress-label').textContent = 'Done! Redirecting…';
+                document.getElementById('pause-btn').classList.add('hidden');
                 setTimeout(function() { window.location.href = "{% url 'results' %}"; }, 800);
             } else {
-                setTimeout(poll, 1000);
+                setTimeout(poll, data.paused ? 2000 : 1000);
             }
         })
         .catch(function() { setTimeout(poll, 2000); });

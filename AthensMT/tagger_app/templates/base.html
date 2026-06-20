@@ -27,6 +27,10 @@
             <h1 class="text-2xl font-semibold mb-3">Athena ODT</h1>
             <p class="text-gray-400">Open Data Tagger</p>
             <nav class="mt-6 space-y-2">
+                <a href="{% url 'home' %}" class="block px-4 py-2 rounded-md bg-gray-700 hover:bg-gray-600 flex items-center gap-2">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l9-9 9 9M5 10v9a1 1 0 001 1h4v-5h4v5h4a1 1 0 001-1v-9"/></svg>
+                    Home
+                </a>
                 <a href="{% url 'upload_file' %}" class="block px-4 py-2 rounded-md bg-gray-700 hover:bg-gray-600">Upload CSV</a>
                 <a href="{% url 'define_columns' %}" class="block px-4 py-2 rounded-md bg-gray-700 hover:bg-gray-600">Define Columns</a>
                 <a href="{% url 'tagging' %}" class="block px-4 py-2 rounded-md bg-gray-700 hover:bg-gray-600">Tagging</a>
