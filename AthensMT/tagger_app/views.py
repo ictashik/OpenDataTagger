@@ -15,7 +15,7 @@ from .utils import (
 import uuid
 from .utils import save_config_file
 from django.core.cache import cache
-from .utils import LLM_MODEL_NAME, LLM_CACHE_KEYS
+from .utils import LLM_CACHE_KEYS, get_active_connection, load_connections, save_connection
 import time
 
 def llm_status_view(request):
@@ -26,7 +26,7 @@ def llm_status_view(request):
 
     return JsonResponse({
         "status": "Connected" if request_count > 0 else "Idle",
-        "model": LLM_MODEL_NAME,
+        "model": get_active_connection()['model'],
         "requests": request_count,
         "total_time": f"{total_time:.2f} sec",
         "avg_speed": f"{avg_speed:.2f} sec/request"
@@ -277,3 +277,39 @@ def results_view(request):
         "table_columns": table_columns,
         "table_data": table_data
     })
+
+
+def connection_editor_view(request):
+    """GET: render editor with past connections. POST: save a new connection."""
+    if request.method == 'POST':
+        host = request.POST.get('host', '').strip()
+        port = request.POST.get('port', '').strip()
+        model = request.POST.get('model', '').strip()
+        if host and port and model:
+            save_connection(host, port, model)
+            return JsonResponse({'success': True, 'message': 'Connection saved.'})
+        return JsonResponse({'success': False, 'message': 'Host, port, and model are all required.'}, status=400)
+
+    connections = load_connections()
+    active = get_active_connection()
+    unique_models = list(dict.fromkeys(c['model'] for c in connections))
+    return render(request, 'connection.html', {
+        'connections': connections,
+        'active': active,
+        'unique_models': unique_models,
+    })
+
+
+def test_connection_view(request):
+    """Quick reachability check against the configured Ollama server."""
+    import urllib.request
+    conn = get_active_connection()
+    url = f"http://{conn['host']}:{conn['port']}/api/tags"
+    try:
+        with urllib.request.urlopen(url, timeout=4) as resp:
+            import json
+            data = json.loads(resp.read())
+            models = [m['name'] for m in data.get('models', [])]
+            return JsonResponse({'success': True, 'models': models})
+    except Exception as e:
+        return JsonResponse({'success': False, 'error': str(e)})

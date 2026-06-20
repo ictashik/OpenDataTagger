@@ -31,6 +31,10 @@
                 <a href="{% url 'define_columns' %}" class="block px-4 py-2 rounded-md bg-gray-700 hover:bg-gray-600">Define Columns</a>
                 <a href="{% url 'tagging' %}" class="block px-4 py-2 rounded-md bg-gray-700 hover:bg-gray-600">Tagging</a>
                 <a href="{% url 'results' %}" class="block px-4 py-2 rounded-md bg-gray-700 hover:bg-gray-600">Results</a>
+                <a href="{% url 'connection_editor' %}" class="block px-4 py-2 rounded-md bg-gray-700 hover:bg-gray-600 flex items-center gap-2">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M12 5l7 7-7 7"/></svg>
+                    Connection
+                </a>
             </nav>
         </div>
         
@@ -52,7 +56,7 @@
     </div>
 
     <div class="w-full text-center p-2 bg-gray-200 dark:bg-gray-800 text-gray-600 dark:text-gray-400 text-xs fixed bottom-0">
-        AI-powered tagging using <span id="selected-model">Llama3</span>. AI can make mistakes—please review results carefully.
+        AI-powered tagging using <span id="selected-model">—</span>. AI can make mistakes—please review results carefully.
     </div>
 
     <script>
@@ -76,6 +80,7 @@
                 document.getElementById("llm-requests").innerText = data.requests;
                 document.getElementById("llm-total-time").innerText = data.total_time;
                 document.getElementById("llm-speed").innerText = data.avg_speed;
+                document.getElementById("selected-model").innerText = data.model;
 
             } catch (error) {
                 console.error("Error fetching LLM stats:", error);

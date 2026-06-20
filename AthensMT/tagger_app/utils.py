@@ -2,18 +2,80 @@ import openai
 import pandas as pd
 import os
 import time
+from datetime import datetime
 from django.core.cache import cache
 
-LLM_MODEL_NAME = "gemma3:27b"
 LLM_CACHE_KEYS = {
     "requests": "llm_request_count",
     "total_time": "llm_total_inference_time",
 }
 
-client = openai.OpenAI(
-    base_url='http://10.60.23.102:11434/v1',
-    api_key='ollama'  # Required, but unused
-)
+CONNECTIONS_CSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'connections.csv')
+
+_DEFAULT_CONNECTION = {
+    'host': '10.60.23.102',
+    'port': '11434',
+    'model': 'gemma3:27b',
+}
+
+
+def load_connections():
+    """Return all saved connections sorted by last_used descending."""
+    path = os.path.normpath(CONNECTIONS_CSV)
+    if not os.path.exists(path):
+        return []
+    try:
+        df = pd.read_csv(path)
+        required = {'host', 'port', 'model', 'last_used'}
+        if not required.issubset(df.columns):
+            return []
+        df['port'] = df['port'].astype(str)
+        return df.sort_values('last_used', ascending=False).to_dict('records')
+    except Exception as e:
+        print(f"Error loading connections: {e}")
+        return []
+
+
+def save_connection(host, port, model):
+    """Upsert a connection record and persist to CSV."""
+    path = os.path.normpath(CONNECTIONS_CSV)
+    connections = load_connections()
+    port = str(port)
+
+    existing = next(
+        (c for c in connections if c['host'] == host and str(c['port']) == port and c['model'] == model),
+        None
+    )
+    if existing:
+        existing['last_used'] = datetime.now().isoformat()
+    else:
+        connections.insert(0, {
+            'host': host,
+            'port': port,
+            'model': model,
+            'last_used': datetime.now().isoformat(),
+        })
+
+    connections.sort(key=lambda x: x['last_used'], reverse=True)
+    pd.DataFrame(connections).to_csv(path, index=False)
+    return connections
+
+
+def get_active_connection():
+    """Return the most recently used connection, falling back to defaults."""
+    connections = load_connections()
+    return connections[0] if connections else dict(_DEFAULT_CONNECTION)
+
+
+def get_llm_client():
+    """Build an OpenAI-compatible client from the active connection config."""
+    conn = get_active_connection()
+    client = openai.OpenAI(
+        base_url=f"http://{conn['host']}:{conn['port']}/v1",
+        api_key='ollama',
+    )
+    return client, conn['model']
+
 
 def call_llm_tagging(system_prompt, user_prompt):
     """
@@ -26,8 +88,9 @@ def call_llm_tagging(system_prompt, user_prompt):
 
         start_time = time.time()
 
+        client, model_name = get_llm_client()
         response = client.chat.completions.create(
-            model=LLM_MODEL_NAME,
+            model=model_name,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
