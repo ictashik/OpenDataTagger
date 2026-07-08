@@ -29,6 +29,50 @@ _DEFAULT_CONNECTION = {
 }
 
 
+def read_csv_safe(path, **kwargs):
+    """Read a user-supplied CSV trying common encodings before giving up.
+
+    Uploaded files are frequently exported from Excel as Windows-1252/Latin-1
+    rather than UTF-8, which raises UnicodeDecodeError with plain read_csv.
+    """
+    for encoding in ('utf-8-sig', 'cp1252', 'latin-1'):
+        try:
+            return pd.read_csv(path, encoding=encoding, **kwargs)
+        except UnicodeDecodeError:
+            continue
+    # latin-1 maps every byte 0-255, so this line is effectively unreachable,
+    # but fall back to it explicitly with replacement as a last resort.
+    return pd.read_csv(path, encoding='latin-1', encoding_errors='replace', **kwargs)
+
+
+def convert_upload_to_csv(path):
+    """If an uploaded file is actually an Excel workbook, convert it to CSV.
+
+    The upload form's file picker only suggests .csv (accept=".csv"), but
+    browsers let users pick "All files" and select an .xlsx/.xls export
+    instead. Reading that binary data as text raises UnicodeDecodeError, so
+    detect the real file type from its signature (not just its extension)
+    and transparently convert it, returning the (possibly new) path.
+    """
+    try:
+        with open(path, 'rb') as f:
+            sig = f.read(8)
+    except OSError:
+        return path
+
+    is_xlsx = sig[:4] == b'PK\x03\x04'
+    is_xls  = sig[:8] == b'\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1'
+    if not (is_xlsx or is_xls):
+        return path
+
+    df = pd.read_excel(path)
+    new_path = os.path.splitext(path)[0] + '.csv'
+    df.to_csv(new_path, index=False)
+    if os.path.normpath(new_path) != os.path.normpath(path):
+        os.remove(path)
+    return new_path
+
+
 # ─── Connections ─────────────────────────────────────────────────────────────
 
 def load_connections():
@@ -244,7 +288,7 @@ def load_config_file(config_path):
     if not config_path or not os.path.exists(config_path):
         return []
     try:
-        df = pd.read_csv(config_path)
+        df = read_csv_safe(config_path)
         if 'OutputColumn' not in df.columns or 'PromptTemplate' not in df.columns:
             return []
         records = df.to_dict('records')
@@ -298,7 +342,7 @@ def evaluate_condition(definition, full_context):
 def row_by_row_tagger(session_key, csv_path, config_path, input_columns,
                       output_definitions, project_id=None):
     try:
-        df = pd.read_csv(csv_path)
+        df = read_csv_safe(csv_path)
         total_rows = len(df)
         PROGRESS_STATUS[session_key] = {
             "done":        0,

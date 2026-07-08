@@ -27,6 +27,8 @@ from .utils import (
     update_project,
     delete_project,
     get_host_stats,
+    read_csv_safe,
+    convert_upload_to_csv,
 )
 
 
@@ -129,12 +131,14 @@ def upload_file_view(request):
             if os.path.exists(csv_path):
                 os.remove(csv_path)
             fs.save(csv_file.name, csv_file)
+            csv_path = convert_upload_to_csv(csv_path)
 
             if config_file:
                 config_path = os.path.join('media', config_file.name)
                 if os.path.exists(config_path):
                     os.remove(config_path)
                 fs.save(config_file.name, config_file)
+                config_path = convert_upload_to_csv(config_path)
             else:
                 config_path = None
 
@@ -167,7 +171,7 @@ def define_columns_view(request):
     if not csv_path or not os.path.exists(csv_path):
         return redirect('upload_file')
 
-    df          = pd.read_csv(csv_path)
+    df          = read_csv_safe(csv_path)
     all_columns = df.columns.tolist()
     config_data = load_config_file(config_path)
 
