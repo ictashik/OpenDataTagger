@@ -25,6 +25,7 @@ from .utils import (
     load_projects,
     save_project,
     update_project,
+    delete_project,
     get_host_stats,
 )
 
@@ -106,6 +107,12 @@ def project_open_view(request, project_id):
         request.session['tagging_session_key'] = project['session_key']
         return redirect('results')
     return redirect('define_columns')
+
+
+def delete_project_view(request, project_id):
+    if request.method == 'POST':
+        delete_project(project_id)
+    return redirect('home')
 
 
 # ─── Upload ──────────────────────────────────────────────────────────────────

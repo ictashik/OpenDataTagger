@@ -452,6 +452,9 @@ document.getElementById('add-tag-btn').addEventListener('click', function() {
     document.getElementById('tag-container').appendChild(newCard);
     refreshCardBadges();
     rebuildTagChips(newCard);
+    // Condition toggle starts unchecked — disable visible inputs so only hidden fallbacks submit
+    var initVisibles = newCard.querySelectorAll('.cond-builder input:not(.send-ctx-cb), .cond-builder select');
+    initVisibles.forEach(function(v) { v.disabled = true; });
 });
 
 /* ═══ Datalist (condition field autocomplete) ═══════════════════ */

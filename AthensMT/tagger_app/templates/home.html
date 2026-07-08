@@ -125,6 +125,12 @@
                                 {% endif %}
                                 <a href="{% url 'project_open' p.project_id %}?action=edit"
                                    class="text-indigo-500 hover:text-indigo-700 text-xs font-medium">Edit</a>
+                                <form method="post" action="{% url 'project_delete' p.project_id %}"
+                                      onsubmit="return confirm('Delete project \'{{ p.name }}\'? This cannot be undone.')">
+                                    {% csrf_token %}
+                                    <button type="submit"
+                                            class="text-red-400 hover:text-red-600 text-xs font-medium">Remove</button>
+                                </form>
                             </div>
                         </td>
                     </tr>

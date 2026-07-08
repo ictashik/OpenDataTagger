@@ -16,5 +16,6 @@ urlpatterns = [
     path(f'{BASE_URL}/results/',                   views.results_view,            name='results'),
     path(f'{BASE_URL}/connection/',                views.connection_editor_view,  name='connection_editor'),
     path(f'{BASE_URL}/connection/test/',           views.test_connection_view,    name='test_connection'),
-    path(f'{BASE_URL}/project/<str:project_id>/open/', views.project_open_view,  name='project_open'),
+    path(f'{BASE_URL}/project/<str:project_id>/open/',   views.project_open_view,   name='project_open'),
+    path(f'{BASE_URL}/project/<str:project_id>/delete/', views.delete_project_view, name='project_delete'),
 ]

@@ -134,6 +134,14 @@ def update_project(project_id, **kwargs):
         pd.DataFrame(projects).to_csv(path, index=False)
 
 
+def delete_project(project_id):
+    path = os.path.normpath(PROJECTS_CSV)
+    with _projects_lock:
+        projects = load_projects()
+        projects = [p for p in projects if str(p['project_id']) != str(project_id)]
+        pd.DataFrame(projects).to_csv(path, index=False)
+
+
 # ─── Stats ───────────────────────────────────────────────────────────────────
 
 def record_stat(host, port, model, session_key, project_id,
@@ -250,8 +258,13 @@ def load_config_file(config_path):
             r.setdefault('SendContext',    '')
             r.setdefault('InputColumns',   '')
             for k in str_fields:
-                if not isinstance(r[k], str):
-                    r[k] = ''
+                val = r[k]
+                if not isinstance(val, str):
+                    # pandas reads '0'/'1' as int; NaN as float — convert properly
+                    try:
+                        r[k] = '' if pd.isna(val) else str(val)
+                    except (TypeError, ValueError):
+                        r[k] = str(val)
         return records
     except Exception as e:
         print(f"Error reading config file: {e}")
@@ -384,7 +397,7 @@ def row_by_row_tagger(session_key, csv_path, config_path, input_columns,
                         f"\n---"
                     )
 
-                if evaluate_condition(definition, full_context):
+                if evaluate_condition(definition, all_context):
                     best_answer, explanation, usage = call_llm_tagging(system_prompt, user_prompt)
                     record_stat(
                         usage['host'], usage['port'], usage['model'],
