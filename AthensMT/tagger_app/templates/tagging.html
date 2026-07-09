@@ -17,6 +17,9 @@
         <div class="w-full bg-gray-700 rounded-full h-3">
             <div id="progress-bar" class="bg-blue-500 h-3 rounded-full transition-all duration-300" style="width:0%"></div>
         </div>
+        <div class="flex justify-between text-xs text-gray-500 mt-1">
+            <span id="progress-time"></span>
+        </div>
     </div>
 
     <!-- Controls -->
@@ -97,6 +100,16 @@ function getCookie(name) {
     return v ? v.pop() : '';
 }
 
+function formatDuration(seconds) {
+    if (seconds == null || isNaN(seconds) || seconds < 0) return '--:--';
+    seconds = Math.round(seconds);
+    var h = Math.floor(seconds / 3600);
+    var m = Math.floor((seconds % 3600) / 60);
+    var s = seconds % 60;
+    var pad = function(n) { return String(n).padStart(2, '0'); };
+    return h > 0 ? (h + ':' + pad(m) + ':' + pad(s)) : (pad(m) + ':' + pad(s));
+}
+
 function poll() {
     fetch("{% url 'tagging_progress' %}?since=" + logsSeen)
         .then(function(r) { return r.json(); })
@@ -115,6 +128,10 @@ function poll() {
             document.getElementById('progress-pct').textContent  = pct + '%';
             document.getElementById('progress-label').textContent =
                 (data.paused ? '[PAUSED] ' : '') + 'Row ' + done + ' of ' + total + ' — ' + data.status;
+
+            document.getElementById('progress-time').textContent =
+                'Elapsed ' + formatDuration(data.elapsed) +
+                (data.status === 'finished' ? '' : ' / Remaining ~' + formatDuration(data.remaining));
 
             // Show pause button once we know we're running
             document.getElementById('pause-btn').classList.remove('hidden');

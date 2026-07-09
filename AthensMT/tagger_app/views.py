@@ -3,6 +3,7 @@ import threading
 import json
 import uuid
 import os
+import time
 
 from django.shortcuts import render, redirect
 from django.conf import settings
@@ -273,14 +274,21 @@ def tagging_progress_view(request):
     tagged_file_path = cache.get(f"tagged_file_{session_key}")
     files_saved      = bool(tagged_file_path and os.path.exists(tagged_file_path))
 
+    done      = progress_data["done"]
+    total     = progress_data["total"]
+    elapsed   = time.time() - progress_data.get("start_time", time.time())
+    remaining = ((elapsed / done) * (total - done)) if done > 0 and total > done else None
+
     return JsonResponse({
-        "done":        progress_data["done"],
-        "total":       progress_data["total"],
+        "done":        done,
+        "total":       total,
         "status":      progress_data["status"],
         "paused":      PAUSE_FLAGS.get(session_key, False),
         "logs":        new_logs,
         "log_total":   len(live_logs),
         "files_saved": files_saved,
+        "elapsed":     elapsed,
+        "remaining":   remaining,
     })
 
 
