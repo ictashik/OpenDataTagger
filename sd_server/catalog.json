@@ -1,0 +1,86 @@
+[
+  {
+    "id": "stable-diffusion-v1-5/stable-diffusion-v1-5",
+    "label": "Stable Diffusion 1.5",
+    "pipeline_class": "StableDiffusionPipeline",
+    "min_vram_mb": 4000,
+    "gated": false,
+    "default_width": 512,
+    "default_height": 512,
+    "default_steps": 30,
+    "default_guidance": 7.5,
+    "notes": "Classic baseline. Fast and low VRAM — a good first download and works on Apple Silicon."
+  },
+  {
+    "id": "stabilityai/sdxl-turbo",
+    "label": "SDXL Turbo",
+    "pipeline_class": "StableDiffusionXLPipeline",
+    "min_vram_mb": 8000,
+    "gated": false,
+    "default_width": 512,
+    "default_height": 512,
+    "default_steps": 4,
+    "default_guidance": 0.0,
+    "notes": "Distilled SDXL for 1-4 step generation. Set guidance to 0. Very fast."
+  },
+  {
+    "id": "stabilityai/stable-diffusion-xl-base-1.0",
+    "label": "Stable Diffusion XL 1.0",
+    "pipeline_class": "StableDiffusionXLPipeline",
+    "min_vram_mb": 10000,
+    "gated": false,
+    "default_width": 1024,
+    "default_height": 1024,
+    "default_steps": 30,
+    "default_guidance": 7.0,
+    "notes": "High-quality 1024px base model. Needs a capable GPU."
+  },
+  {
+    "id": "stabilityai/stable-diffusion-3.5-medium",
+    "label": "Stable Diffusion 3.5 Medium",
+    "pipeline_class": "StableDiffusion3Pipeline",
+    "min_vram_mb": 16000,
+    "gated": true,
+    "default_width": 1024,
+    "default_height": 1024,
+    "default_steps": 28,
+    "default_guidance": 4.5,
+    "notes": "Gated — accept the licence on Hugging Face and supply an HF token to download."
+  },
+  {
+    "id": "stabilityai/stable-diffusion-3.5-large",
+    "label": "Stable Diffusion 3.5 Large",
+    "pipeline_class": "StableDiffusion3Pipeline",
+    "min_vram_mb": 24000,
+    "gated": true,
+    "default_width": 1024,
+    "default_height": 1024,
+    "default_steps": 28,
+    "default_guidance": 4.5,
+    "notes": "Gated. Highest-quality SD3.5 tier — requires a large GPU and an HF token."
+  },
+  {
+    "id": "black-forest-labs/FLUX.1-schnell",
+    "label": "FLUX.1 schnell",
+    "pipeline_class": "FluxPipeline",
+    "min_vram_mb": 24000,
+    "gated": false,
+    "default_width": 1024,
+    "default_height": 1024,
+    "default_steps": 4,
+    "default_guidance": 0.0,
+    "notes": "Fast (4-step) FLUX. Ungated but large — best on a 24GB+ GPU."
+  },
+  {
+    "id": "black-forest-labs/FLUX.1-dev",
+    "label": "FLUX.1 dev",
+    "pipeline_class": "FluxPipeline",
+    "min_vram_mb": 24000,
+    "gated": true,
+    "default_width": 1024,
+    "default_height": 1024,
+    "default_steps": 28,
+    "default_guidance": 3.5,
+    "notes": "Gated — accept the licence on Hugging Face and supply an HF token. Highest FLUX quality."
+  }
+]

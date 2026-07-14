@@ -2,19 +2,31 @@ import threading
 import openai
 import pandas as pd
 import os
+import re
 import time
+import json
+import base64
+import urllib.request
+import urllib.error
+import urllib.parse
 from datetime import datetime
 from django.core.cache import cache
+from django.conf import settings
 
 LLM_CACHE_KEYS = {
     "requests": "llm_request_count",
     "total_time": "llm_total_inference_time",
 }
+IMAGE_CACHE_KEYS = {
+    "requests": "img_request_count",
+    "total_time": "img_total_inference_time",
+}
 
 _base = os.path.dirname(os.path.abspath(__file__))
-CONNECTIONS_CSV = os.path.join(_base, '..', 'connections.csv')
-PROJECTS_CSV    = os.path.join(_base, '..', 'projects.csv')
-STATS_CSV       = os.path.join(_base, '..', 'stats.csv')
+CONNECTIONS_CSV       = os.path.join(_base, '..', 'connections.csv')
+IMAGE_CONNECTIONS_CSV = os.path.join(_base, '..', 'image_connections.csv')
+PROJECTS_CSV          = os.path.join(_base, '..', 'projects.csv')
+STATS_CSV             = os.path.join(_base, '..', 'stats.csv')
 
 PAUSE_FLAGS = {}     # session_key -> bool  (True = paused)
 PROGRESS_STATUS = {} # session_key -> dict
@@ -27,6 +39,16 @@ _DEFAULT_CONNECTION = {
     'port': '11434',
     'model': 'gemma3:27b',
 }
+
+# Fallback SD server if image_connections.csv is empty (local server on localhost).
+_DEFAULT_IMAGE_CONNECTION = {
+    'host':  getattr(settings, 'SD_SERVER_DEFAULT', {}).get('host', 'localhost'),
+    'port':  getattr(settings, 'SD_SERVER_DEFAULT', {}).get('port', '7860'),
+    'model': '',
+}
+
+# Image generation can take a while (large models / many steps).
+SD_TIMEOUT = 600
 
 
 def read_csv_safe(path, **kwargs):
@@ -119,6 +141,220 @@ def get_llm_client():
     return client, conn['model']
 
 
+# ─── Image backend (Stable Diffusion server) ─────────────────────────────────
+#
+# Mirrors the LLM connection layer above, but points at the standalone SD server
+# (see sd_server/). ODT only makes plain HTTP calls — no torch/diffusers here.
+
+def load_image_connections():
+    path = os.path.normpath(IMAGE_CONNECTIONS_CSV)
+    if not os.path.exists(path):
+        return []
+    try:
+        df = pd.read_csv(path)
+        if not {'host', 'port', 'model', 'last_used'}.issubset(df.columns):
+            return []
+        df['port'] = df['port'].astype(str)
+        df['model'] = df['model'].fillna('').astype(str)
+        return df.sort_values('last_used', ascending=False).to_dict('records')
+    except Exception as e:
+        print(f"Error loading image connections: {e}")
+        return []
+
+
+def save_image_connection(host, port, model=''):
+    path = os.path.normpath(IMAGE_CONNECTIONS_CSV)
+    connections = load_image_connections()
+    port = str(port)
+    existing = next(
+        (c for c in connections if c['host'] == host and str(c['port']) == port and str(c.get('model', '')) == model),
+        None
+    )
+    if existing:
+        existing['last_used'] = datetime.now().isoformat()
+    else:
+        connections.insert(0, {'host': host, 'port': port, 'model': model,
+                               'last_used': datetime.now().isoformat()})
+    connections.sort(key=lambda x: x['last_used'], reverse=True)
+    pd.DataFrame(connections).to_csv(path, index=False)
+    return connections
+
+
+def get_active_image_connection():
+    connections = load_image_connections()
+    return connections[0] if connections else dict(_DEFAULT_IMAGE_CONNECTION)
+
+
+def _sd_base_url(conn=None):
+    conn = conn or get_active_image_connection()
+    return f"http://{conn['host']}:{conn['port']}"
+
+
+def _sd_request(path, payload=None, method='GET', timeout=10):
+    """Call the SD server. GET when payload is None, else JSON POST.
+    Returns parsed JSON (dict). Raises on transport/HTTP errors."""
+    url = _sd_base_url() + path
+    data = None
+    headers = {}
+    if payload is not None or method == 'POST':
+        data = json.dumps(payload or {}).encode('utf-8')
+        headers['Content-Type'] = 'application/json'
+        method = 'POST'
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode('utf-8'))
+
+
+def get_image_capability(timeout=6):
+    return _sd_request('/capability', timeout=timeout)
+
+
+def get_image_models(timeout=10):
+    return _sd_request('/models', timeout=timeout)
+
+
+def start_image_download(model_id, hf_token=None, timeout=10):
+    return _sd_request('/download', {'model_id': model_id, 'hf_token': hf_token or None},
+                       method='POST', timeout=timeout)
+
+
+def image_download_status(job_id, timeout=6):
+    return _sd_request(f'/download/status?job_id={urllib.parse.quote(job_id)}', timeout=timeout)
+
+
+def get_downloaded_image_models():
+    """List of catalog/local models already downloaded — for the model dropdown.
+    Returns [] if the SD server is unreachable."""
+    try:
+        data = get_image_models()
+        return [m for m in data.get('models', []) if m.get('downloaded')]
+    except Exception as e:
+        print(f"Image models unavailable: {e}")
+        return []
+
+
+def _coerce_int(val, default):
+    try:
+        s = str(val).strip()
+        if s == '' or s.lower() == 'none':
+            return default
+        return int(float(s))
+    except (TypeError, ValueError):
+        return default
+
+
+def _coerce_float(val, default):
+    try:
+        s = str(val).strip()
+        if s == '' or s.lower() == 'none':
+            return default
+        return float(s)
+    except (TypeError, ValueError):
+        return default
+
+
+def call_image_generation(prompt, params):
+    """Generate image(s) via the SD server for one rendered prompt.
+
+    params keys (all optional except model): model, negative_prompt, width,
+    height, steps, guidance, seed, num_images, hf_token.
+
+    Returns (image_bytes_list, meta, usage_dict). usage keys mirror the LLM
+    path (prompt_tokens/completion_tokens are 0 for images) so record_stat is
+    reused unchanged. On failure image_bytes_list is empty and meta['error']
+    is set.
+    """
+    conn  = get_active_image_connection()
+    model = (params.get('model') or conn.get('model') or '').strip()
+
+    request_count = cache.get(IMAGE_CACHE_KEYS["requests"], 0) + 1
+    cache.set(IMAGE_CACHE_KEYS["requests"], request_count, None)
+
+    payload = {
+        'model_id':        model,
+        'prompt':          prompt,
+        'negative_prompt': params.get('negative_prompt', '') or '',
+        'width':           _coerce_int(params.get('width'), 512),
+        'height':          _coerce_int(params.get('height'), 512),
+        'steps':           _coerce_int(params.get('steps'), 30),
+        'guidance_scale':  _coerce_float(params.get('guidance'), 7.5),
+        'seed':            _coerce_int(params.get('seed'), -1),
+        'num_images':      max(1, _coerce_int(params.get('num_images'), 1)),
+        'hf_token':        params.get('hf_token') or None,
+    }
+
+    start = time.time()
+    usage = {
+        'prompt_tokens': 0, 'completion_tokens': 0, 'elapsed_sec': 0,
+        'host': conn['host'], 'port': conn['port'], 'model': model,
+    }
+    try:
+        data = _sd_request('/generate', payload, method='POST', timeout=SD_TIMEOUT)
+        elapsed = time.time() - start
+        usage['elapsed_sec'] = elapsed
+        cache.set(IMAGE_CACHE_KEYS["total_time"],
+                  cache.get(IMAGE_CACHE_KEYS["total_time"], 0.0) + elapsed, None)
+        images = [base64.b64decode(b) for b in data.get('images', [])]
+        meta = {'seed_used': data.get('seed_used'),
+                'server_elapsed': data.get('elapsed_sec')}
+        return images, meta, usage
+    except urllib.error.HTTPError as e:
+        try:
+            detail = json.loads(e.read().decode('utf-8')).get('detail', str(e))
+        except Exception:
+            detail = str(e)
+        usage['elapsed_sec'] = time.time() - start
+        print(f"Image generation HTTP error: {detail}")
+        return [], {'error': detail}, usage
+    except Exception as e:
+        usage['elapsed_sec'] = time.time() - start
+        print(f"Image generation error: {e}")
+        return [], {'error': str(e)}, usage
+
+
+def _generate_image_for_tag(definition, rendered_prompt, images_dir, images_rel,
+                            row_index, out_col, session_key, project_id):
+    """Run one image generation for a tag, save the PNG(s), record a stat.
+
+    Returns (cell_value, explanation, image_url): cell_value is the
+    MEDIA_ROOT-relative path of the first image written into the tagged CSV
+    (or an "ERROR: …" string on failure); image_url is that path prefixed with
+    MEDIA_URL for the live-log thumbnail ('' on failure).
+    """
+    try:
+        params = json.loads(definition.get('ImageParams') or '{}')
+        if not isinstance(params, dict):
+            params = {}
+    except (ValueError, TypeError):
+        params = {}
+
+    images, meta, usage = call_image_generation(rendered_prompt, params)
+    record_stat(
+        usage['host'], usage['port'], usage['model'],
+        session_key, project_id,
+        usage['prompt_tokens'], usage['completion_tokens'], usage['elapsed_sec'],
+    )
+
+    if not images:
+        err = meta.get('error', 'unknown error')
+        return f"ERROR: {err}", f"Image generation failed: {err}", ''
+
+    safe_col = re.sub(r'[^A-Za-z0-9_-]+', '_', str(out_col)).strip('_') or 'img'
+    saved_rel = []
+    for n, img_bytes in enumerate(images):
+        fname = f"row{row_index}_{safe_col}_{n}.png"
+        with open(os.path.join(images_dir, fname), 'wb') as fh:
+            fh.write(img_bytes)
+        saved_rel.append(f"{images_rel}/{fname}")
+
+    cell_value = saved_rel[0]
+    image_url  = settings.MEDIA_URL + saved_rel[0]
+    model = params.get('model') or usage.get('model', '')
+    seed  = meta.get('seed_used')
+    explanation = f"Generated with {model}" + (f" (seed {seed})" if seed is not None else "")
+    return cell_value, explanation, image_url
+
+
 # ─── Projects ────────────────────────────────────────────────────────────────
 
 def load_projects():
@@ -135,13 +371,19 @@ def load_projects():
         for col in ('csv_path', 'config_path', 'session_key', 'status'):
             if col in df.columns:
                 df[col] = df[col].fillna('').astype(str)
+        # Project mode: 'text' (LLM tagging) or 'image' (Stable Diffusion).
+        # Older registries have no column — default them to 'text'.
+        if 'mode' in df.columns:
+            df['mode'] = df['mode'].fillna('text').replace('', 'text').astype(str)
+        else:
+            df['mode'] = 'text'
         return df.sort_values('last_updated', ascending=False).to_dict('records')
     except Exception as e:
         print(f"Error loading projects: {e}")
         return []
 
 
-def save_project(project_id, name, csv_path, config_path=''):
+def save_project(project_id, name, csv_path, config_path='', mode='text'):
     path = os.path.normpath(PROJECTS_CSV)
     with _projects_lock:
         projects = load_projects()
@@ -159,10 +401,12 @@ def save_project(project_id, name, csv_path, config_path=''):
                 'total_rows': 0,
                 'done_rows': 0,
                 'session_key': '',
+                'mode': mode or 'text',
             })
         else:
             existing['last_updated'] = now
             existing['config_path'] = config_path or existing.get('config_path', '')
+            existing['mode'] = mode or existing.get('mode', 'text')
         pd.DataFrame(projects).to_csv(path, index=False)
 
 
@@ -293,7 +537,7 @@ def load_config_file(config_path):
             return []
         records = df.to_dict('records')
         str_fields = ('ConditionField', 'ConditionOp', 'ConditionValue',
-                      'DefaultValue', 'SendContext', 'InputColumns')
+                      'DefaultValue', 'SendContext', 'InputColumns', 'ImageParams')
         for r in records:
             r.setdefault('ConditionField', '')
             r.setdefault('ConditionOp',    '==')
@@ -301,6 +545,7 @@ def load_config_file(config_path):
             r.setdefault('DefaultValue',   '')
             r.setdefault('SendContext',    '')
             r.setdefault('InputColumns',   '')
+            r.setdefault('ImageParams',    '')
             for k in str_fields:
                 val = r[k]
                 if not isinstance(val, str):
@@ -340,7 +585,7 @@ def evaluate_condition(definition, full_context):
 # ─── Core tagger ─────────────────────────────────────────────────────────────
 
 def row_by_row_tagger(session_key, csv_path, config_path, input_columns,
-                      output_definitions, project_id=None):
+                      output_definitions, project_id=None, mode='text'):
     try:
         df = read_csv_safe(csv_path)
         total_rows = len(df)
@@ -358,6 +603,13 @@ def row_by_row_tagger(session_key, csv_path, config_path, input_columns,
         base, ext = os.path.splitext(csv_path)
         logs_path   = base + "_logs.csv"
         tagged_path = base + "_tagged.csv"
+
+        # For image mode, generated PNGs go in a sibling folder under media/;
+        # cells store the path relative to MEDIA_ROOT so results/logs can render them.
+        images_dir = base + "_images"
+        images_rel = os.path.basename(images_dir)
+        if mode == 'image':
+            os.makedirs(images_dir, exist_ok=True)
 
         cache.set(f"tagged_file_{session_key}", tagged_path, timeout=86400)
         cache.set(f"logs_file_{session_key}",   logs_path,   timeout=86400)
@@ -441,13 +693,20 @@ def row_by_row_tagger(session_key, csv_path, config_path, input_columns,
                         f"\n---"
                     )
 
+                image_url = ''
                 if evaluate_condition(definition, all_context):
-                    best_answer, explanation, usage = call_llm_tagging(system_prompt, user_prompt)
-                    record_stat(
-                        usage['host'], usage['port'], usage['model'],
-                        session_key, project_id,
-                        usage['prompt_tokens'], usage['completion_tokens'], usage['elapsed_sec'],
-                    )
+                    if mode == 'image':
+                        best_answer, explanation, image_url = _generate_image_for_tag(
+                            definition, rendered_prompt, images_dir, images_rel,
+                            i, out_col, session_key, project_id,
+                        )
+                    else:
+                        best_answer, explanation, usage = call_llm_tagging(system_prompt, user_prompt)
+                        record_stat(
+                            usage['host'], usage['port'], usage['model'],
+                            session_key, project_id,
+                            usage['prompt_tokens'], usage['completion_tokens'], usage['elapsed_sec'],
+                        )
                 else:
                     best_answer = definition.get('DefaultValue', '').strip() or 'N/A'
                     explanation = (
@@ -475,8 +734,12 @@ def row_by_row_tagger(session_key, csv_path, config_path, input_columns,
                 }
                 pd.DataFrame([log_entry]).to_csv(logs_path, mode='a', header=False, index=False)
 
+                # live_logs carry an extra image_url for the frontend; the CSV
+                # log above keeps its fixed 5-column schema.
+                live_entry = dict(log_entry)
+                live_entry["image_url"] = image_url
                 live = PROGRESS_STATUS[session_key]["live_logs"]
-                live.append(log_entry)
+                live.append(live_entry)
                 if len(live) > 100:
                     live.pop(0)
 

@@ -69,7 +69,8 @@
                 {% for entry in config_data %}
                 {% with has_cond=entry.ConditionField %}
                 <div class="tag-card border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden bg-gray-50 dark:bg-gray-900"
-                     data-saved-cols="{{ entry.InputColumns }}">
+                     data-saved-cols="{{ entry.InputColumns }}"
+                     data-image-params="{{ entry.ImageParams }}">
                     <!-- Card header -->
                     <div class="flex items-center gap-3 px-4 py-3 border-b border-gray-200 dark:border-gray-700">
                         <span class="card-badge flex-shrink-0 text-xs font-mono text-indigo-400 bg-indigo-50 dark:bg-indigo-900/30 border border-indigo-200 dark:border-indigo-700 px-2 py-0.5 rounded">Step</span>
@@ -160,7 +161,8 @@
 
                 {% if not config_data %}
                 <div class="tag-card border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden bg-gray-50 dark:bg-gray-900"
-                     data-saved-cols="">
+                     data-saved-cols=""
+                     data-image-params="">
                     <div class="flex items-center gap-3 px-4 py-3 border-b border-gray-200 dark:border-gray-700">
                         <span class="card-badge flex-shrink-0 text-xs font-mono text-indigo-400 bg-indigo-50 dark:bg-indigo-900/30 border border-indigo-200 dark:border-indigo-700 px-2 py-0.5 rounded">Step</span>
                         <input type="text" name="output_column"
@@ -264,9 +266,12 @@
 </div>
 
 <script type="application/json" id="columns-data">{{ columns_json|default:"[]"|safe }}</script>
+{{ image_models|json_script:"image-models-data" }}
+<script>var PROJECT_MODE = "{{ mode|default:'text' }}";</script>
 
 <script>
-var ALL_COLUMNS = JSON.parse(document.getElementById('columns-data').textContent || '[]');
+var ALL_COLUMNS  = JSON.parse(document.getElementById('columns-data').textContent || '[]');
+var IMAGE_MODELS = JSON.parse((document.getElementById('image-models-data') || {}).textContent || '[]') || [];
 
 /* ═══ Helpers ═══════════════════════════════════════════════════ */
 function escHtml(s) {
@@ -380,6 +385,7 @@ function makeTagCard() {
     var div = document.createElement('div');
     div.className = 'tag-card border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden bg-gray-50 dark:bg-gray-900';
     div.dataset.savedCols = '';
+    div.dataset.imageParams = '';
     var ops = ['==:equals','!=:not equals','contains:contains','not_contains:not contains','is_empty:is empty','is_not_empty:is not empty'];
     var opHtml = ops.map(function(o){var p=o.split(':');return '<option value="'+p[0]+'">'+p[1]+'</option>';}).join('');
     var h = '';
@@ -447,11 +453,113 @@ function refreshCardBadges() {
     });
 }
 
+/* ═══ Image mode: per-card Stable Diffusion controls ════════════ */
+function imageModelOptions(selectedId) {
+    if (!IMAGE_MODELS.length) {
+        return '<option value="">No models downloaded — see Image Backend</option>';
+    }
+    return IMAGE_MODELS.map(function(m) {
+        var sel = (m.id === selectedId) ? ' selected' : '';
+        return '<option value="' + escAttr(m.id) + '"' + sel + '>' + escHtml(m.label || m.id) + '</option>';
+    }).join('');
+}
+
+function numField(label, cls, def, step) {
+    return '<div>'
+        + '<label class="block text-[11px] text-gray-500 dark:text-gray-400 mb-0.5">' + label + '</label>'
+        + '<input type="number" class="' + cls + ' w-full px-2 py-1 rounded border border-gray-300 dark:border-gray-600 text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"'
+        + (step ? ' step="' + step + '"' : '') + ' value="' + def + '">'
+        + '</div>';
+}
+
+function imgModelById(id) {
+    for (var i = 0; i < IMAGE_MODELS.length; i++) { if (IMAGE_MODELS[i].id === id) return IMAGE_MODELS[i]; }
+    return null;
+}
+
+function applyModelDefaults(sec) {
+    var sel = sec.querySelector('.img-model');
+    var m   = sel ? imgModelById(sel.value) : null;
+    if (!m) return;
+    if (m.default_width)    sec.querySelector('.img-width').value    = m.default_width;
+    if (m.default_height)   sec.querySelector('.img-height').value   = m.default_height;
+    if (m.default_steps)    sec.querySelector('.img-steps').value    = m.default_steps;
+    if (m.default_guidance !== undefined && m.default_guidance !== null)
+        sec.querySelector('.img-guidance').value = m.default_guidance;
+}
+
+function updateImageParams(card) {
+    var sec = card.querySelector('.img-section');
+    if (!sec) return;
+    var get = function(sel) { var el = sec.querySelector(sel); return el ? el.value : ''; };
+    sec.querySelector('.image-params-hidden').value = JSON.stringify({
+        model:           get('.img-model'),
+        negative_prompt: get('.img-neg-ta'),
+        width:           get('.img-width')    || '512',
+        height:          get('.img-height')   || '512',
+        steps:           get('.img-steps')    || '30',
+        guidance:        get('.img-guidance') || '7.5',
+        seed:            get('.img-seed')     || '-1',
+        num_images:      get('.img-num')      || '1'
+    });
+}
+
+function enhanceCardForImage(card) {
+    if (PROJECT_MODE !== 'image') return;
+    if (card.querySelector('.img-section')) return;
+
+    var saved = {};
+    try { saved = JSON.parse(card.dataset.imageParams || '{}') || {}; } catch (e) { saved = {}; }
+
+    var sec = document.createElement('div');
+    sec.className = 'img-section px-4 py-3 bg-white dark:bg-gray-800 border-t border-gray-200 dark:border-gray-700 space-y-3';
+    var h = '';
+    h += '<div><label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Model</label>';
+    h += '<select class="img-model w-full px-2 py-1.5 rounded border border-gray-300 dark:border-gray-600 text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100">' + imageModelOptions(saved.model) + '</select></div>';
+    h += '<div><label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Negative Prompt <span class="font-normal text-gray-400">— type # to insert a column</span></label>';
+    h += '<textarea class="prompt-ta img-neg-ta w-full px-3 py-2 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 text-sm resize-y font-mono" rows="2" placeholder="e.g. blurry, low quality, watermark"></textarea></div>';
+    h += '<div class="grid grid-cols-3 gap-2">';
+    h += numField('Width', 'img-width', 512);
+    h += numField('Height', 'img-height', 512);
+    h += numField('Steps', 'img-steps', 30);
+    h += numField('Guidance', 'img-guidance', 7.5, '0.1');
+    h += numField('Seed (-1=rand)', 'img-seed', -1);
+    h += numField('Images', 'img-num', 1);
+    h += '</div>';
+    h += '<input type="hidden" name="image_params" class="image-params-hidden" value="">';
+    sec.innerHTML = h;
+    card.appendChild(sec);
+
+    var setv = function(sel, val, def) {
+        var el = sec.querySelector(sel);
+        if (el) el.value = (val === undefined || val === null || val === '') ? def : val;
+    };
+    sec.querySelector('.img-neg-ta').value = saved.negative_prompt || '';
+    setv('.img-width', saved.width, 512);
+    setv('.img-height', saved.height, 512);
+    setv('.img-steps', saved.steps, 30);
+    setv('.img-guidance', saved.guidance, 7.5);
+    setv('.img-seed', saved.seed, -1);
+    setv('.img-num', saved.num_images, 1);
+    if (!saved.model) applyModelDefaults(sec);
+
+    // Send-context is meaningless for image generation — hide it.
+    var sc = card.querySelector('.send-ctx-cb');
+    if (sc) { var lbl = sc.closest('label'); if (lbl) lbl.style.display = 'none'; }
+
+    // Nudge the prompt placeholder toward an image example.
+    var mainTa = card.querySelector('.prompt-ta');
+    if (mainTa) mainTa.placeholder = 'e.g. a portrait of {name}, {description}, photorealistic, studio lighting';
+
+    updateImageParams(card);
+}
+
 document.getElementById('add-tag-btn').addEventListener('click', function() {
     var newCard = makeTagCard();
     document.getElementById('tag-container').appendChild(newCard);
     refreshCardBadges();
     rebuildTagChips(newCard);
+    enhanceCardForImage(newCard);
     // Condition toggle starts unchecked — disable visible inputs so only hidden fallbacks submit
     var initVisibles = newCard.querySelectorAll('.cond-builder input:not(.send-ctx-cb), .cond-builder select');
     initVisibles.forEach(function(v) { v.disabled = true; });
@@ -480,11 +588,22 @@ document.getElementById('tag-container').addEventListener('input', function(e) {
         var changedIdx  = cards.indexOf(changedCard);
         for (var i = changedIdx + 1; i < cards.length; i++) rebuildTagChips(cards[i]);
     }
+    // Any change inside an image section re-serialises its params.
+    if (e.target.closest('.img-section')) {
+        updateImageParams(e.target.closest('.tag-card'));
+    }
 });
 
 document.getElementById('tag-container').addEventListener('change', function(e) {
     var card = e.target.closest('.tag-card');
     if (!card) return;
+
+    // Image model changed — pull in that model's recommended defaults.
+    if (e.target.classList.contains('img-model')) {
+        applyModelDefaults(card.querySelector('.img-section'));
+        updateImageParams(card);
+        return;
+    }
 
     // Per-tag chip toggled
     if (e.target.classList.contains('tag-chip-cb')) {
@@ -633,9 +752,15 @@ document.addEventListener('click', function(e) { if (!picker.contains(e.target) 
 refreshCardBadges();
 rebuildDatalist();
 
+// Ensure every image card's params are serialised right before submit.
+document.getElementById('main-form').addEventListener('submit', function() {
+    document.querySelectorAll('.tag-card').forEach(updateImageParams);
+});
+
 // Build per-tag chips for all server-rendered cards
 document.querySelectorAll('.tag-card').forEach(function(card) {
     rebuildTagChips(card);
+    enhanceCardForImage(card);
 
     // Init condition toggle state
     var toggle   = card.querySelector('.cond-toggle');

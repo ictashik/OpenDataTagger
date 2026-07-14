@@ -21,6 +21,10 @@ import os
 MEDIA_URL = '/media/'
 MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 
+# Default Stable Diffusion server (see sd_server/). Used as the fallback when
+# image_connections.csv is empty. "local" = this server running on localhost.
+SD_SERVER_DEFAULT = {'host': 'localhost', 'port': '7860'}
+
 
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/5.0/howto/deployment/checklist/

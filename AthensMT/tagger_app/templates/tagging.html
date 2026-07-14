@@ -4,8 +4,13 @@
 <div class="flex flex-col items-center justify-center min-h-screen bg-gray-900 text-white px-4">
 
     <div class="w-full max-w-4xl text-center">
+        {% if mode == 'image' %}
+        <h1 class="text-3xl font-bold text-blue-400">Image Generation in Progress</h1>
+        <p class="text-gray-400 text-sm mt-1">Generating an image for each row with Stable Diffusion.</p>
+        {% else %}
         <h1 class="text-3xl font-bold text-blue-400">AI Tagging in Progress</h1>
         <p class="text-gray-400 text-sm mt-1">Analysing data row by row and generating AI-assisted outputs.</p>
+        {% endif %}
     </div>
 
     <!-- Progress bar -->
@@ -57,10 +62,20 @@ function appendLogs(logs) {
         if (empty) { empty.remove(); empty = null; }
         var entry = document.createElement('div');
         entry.className = 'border-b border-gray-800 pb-2';
+        var answerLine;
+        if (log.image_url) {
+            answerLine =
+                '<a href="' + escHtml(log.image_url) + '" target="_blank">' +
+                '<img src="' + escHtml(log.image_url) + '" alt="generated" ' +
+                'style="max-height:180px;border-radius:6px;margin-top:4px;border:1px solid #374151;"></a><br>';
+        } else {
+            answerLine =
+                '<span class="text-green-400"><b>Answer:</b> ' + escHtml(log.best_answer) + '</span><br>';
+        }
         entry.innerHTML =
             '<span class="text-yellow-400 font-bold">[Row ' + log.row_index + '] ' + escHtml(log.column) + '</span><br>' +
             '<span class="text-gray-400"><b>Prompt:</b> '      + escHtml(log.prompt)      + '</span><br>' +
-            '<span class="text-green-400"><b>Answer:</b> '     + escHtml(log.best_answer) + '</span><br>' +
+            answerLine +
             '<span class="text-blue-400"><i>Explanation:</i> ' + escHtml(log.explanation) + '</span>';
         box.appendChild(entry);
     });

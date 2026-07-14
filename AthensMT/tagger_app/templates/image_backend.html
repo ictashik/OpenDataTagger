@@ -1,0 +1,210 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="max-w-4xl mx-auto py-8 space-y-6">
+    {% csrf_token %}
+
+    <div>
+        <h1 class="text-2xl font-semibold text-gray-900 dark:text-gray-100">Image Backend</h1>
+        <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">
+            Point ODT at a Stable Diffusion server (see <code>sd_server/</code>). Run it locally
+            (<code>localhost</code>) or on a GPU box on your network, then download a model to use it.
+        </p>
+    </div>
+
+    <!-- Active + editor -->
+    <div class="bg-white dark:bg-gray-800 rounded-lg shadow p-6 space-y-4">
+        <div class="flex items-center justify-between">
+            <div>
+                <span class="text-xs uppercase tracking-wide text-gray-400">Active server</span>
+                <p id="active-label" class="text-base font-mono text-indigo-500">
+                    {{ active.host }}:{{ active.port }}
+                </p>
+            </div>
+            <span id="server-badge" class="text-xs px-2 py-1 rounded-full bg-gray-200 dark:bg-gray-700 text-gray-500">checking…</span>
+        </div>
+
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div>
+                <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Host</label>
+                <input id="inp-host" type="text" value="{{ active.host }}"
+                    class="w-full px-3 py-2 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-sm text-gray-900 dark:text-gray-100">
+            </div>
+            <div>
+                <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Port</label>
+                <input id="inp-port" type="text" value="{{ active.port }}"
+                    class="w-full px-3 py-2 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-sm text-gray-900 dark:text-gray-100">
+            </div>
+            <div class="flex items-end gap-2">
+                <button onclick="saveBackend()"
+                    class="flex-1 px-4 py-2 rounded-md bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium">Save &amp; Activate</button>
+                <button onclick="refreshAll()"
+                    class="px-4 py-2 rounded-md border border-gray-300 dark:border-gray-600 text-sm text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700">Refresh</button>
+            </div>
+        </div>
+        <p id="status-msg" class="text-xs hidden"></p>
+    </div>
+
+    <!-- Capability -->
+    <div class="bg-white dark:bg-gray-800 rounded-lg shadow p-6">
+        <h2 class="text-base font-semibold text-gray-800 dark:text-gray-100 mb-3">This machine's capability</h2>
+        <div id="capability-box" class="text-sm text-gray-600 dark:text-gray-300">Loading…</div>
+    </div>
+
+    <!-- HF token -->
+    <div class="bg-white dark:bg-gray-800 rounded-lg shadow p-6">
+        <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Hugging Face token
+            <span class="font-normal text-gray-400">— required only for gated models (SD 3.5, FLUX.1-dev)</span></label>
+        <input id="inp-hf-token" type="password" placeholder="hf_…"
+            class="w-full px-3 py-2 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-sm text-gray-900 dark:text-gray-100">
+    </div>
+
+    <!-- Models -->
+    <div class="bg-white dark:bg-gray-800 rounded-lg shadow p-6">
+        <h2 class="text-base font-semibold text-gray-800 dark:text-gray-100 mb-3">Models</h2>
+        <div id="models-box" class="space-y-2 text-sm text-gray-600 dark:text-gray-300">Loading…</div>
+    </div>
+</div>
+
+<script>
+function getCookie(name) {
+    var v = document.cookie.match('(^|;)\\s*' + name + '\\s*=\\s*([^;]+)');
+    return v ? v.pop() : '';
+}
+function escHtml(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function showStatus(msg, ok) {
+    var el = document.getElementById('status-msg');
+    el.textContent = msg;
+    el.className = 'text-xs ' + (ok ? 'text-green-500' : 'text-red-500');
+}
+
+function saveBackend() {
+    var host = document.getElementById('inp-host').value.trim();
+    var port = document.getElementById('inp-port').value.trim();
+    if (!host || !port) { showStatus('Host and port are required.', false); return; }
+    var fd = new FormData();
+    fd.append('host', host); fd.append('port', port);
+    fetch("{% url 'image_backend' %}", {
+        method: 'POST', headers: {'X-CSRFToken': getCookie('csrftoken')}, body: fd
+    }).then(function(r){return r.json();}).then(function(d){
+        showStatus(d.message || (d.success ? 'Saved.' : 'Error.'), !!d.success);
+        document.getElementById('active-label').textContent = host + ':' + port;
+        refreshAll();
+    }).catch(function(e){ showStatus('Error: ' + e, false); });
+}
+
+function renderCapability(cap) {
+    var badge = document.getElementById('server-badge');
+    badge.textContent = 'online (' + (cap.backend || '?') + ')';
+    badge.className = 'text-xs px-2 py-1 rounded-full bg-green-100 text-green-700';
+    var rows = [
+        ['Backend', cap.backend],
+        ['Device', cap.device_name],
+        ['VRAM', cap.vram_total_mb ? (cap.vram_total_mb + ' MB (' + (cap.vram_free_mb||0) + ' free)') : 'n/a'],
+        ['System RAM', cap.ram_mb ? (cap.ram_mb + ' MB') : 'n/a'],
+        ['torch', cap.torch || '—'],
+        ['diffusers', cap.diffusers || '—']
+    ];
+    var html = '<div class="grid grid-cols-2 gap-x-6 gap-y-1">';
+    rows.forEach(function(r){ html += '<div><span class="text-gray-400">' + r[0] + ':</span> ' + escHtml(r[1] || '—') + '</div>'; });
+    html += '</div>';
+    if (cap.warning) html += '<p class="mt-2 text-yellow-500">⚠ ' + escHtml(cap.warning) + '</p>';
+    document.getElementById('capability-box').innerHTML = html;
+}
+
+function serverOffline(err) {
+    var badge = document.getElementById('server-badge');
+    badge.textContent = 'offline';
+    badge.className = 'text-xs px-2 py-1 rounded-full bg-red-100 text-red-700';
+    document.getElementById('capability-box').innerHTML =
+        '<p class="text-red-500">Could not reach the SD server. Is it running?</p>' +
+        '<p class="text-xs text-gray-400 mt-1">' + escHtml(err || '') + '</p>';
+    document.getElementById('models-box').innerHTML =
+        '<p class="text-gray-400">Start the server (see sd_server/README.md), then Refresh.</p>';
+}
+
+function badge(text, cls) { return '<span class="text-[11px] px-1.5 py-0.5 rounded ' + cls + '">' + text + '</span>'; }
+
+function renderModels(models) {
+    if (!models || !models.length) {
+        document.getElementById('models-box').innerHTML = '<p class="text-gray-400">No models listed.</p>';
+        return;
+    }
+    var html = '';
+    models.forEach(function(m) {
+        var badges = '';
+        if (m.downloaded) badges += badge('downloaded', 'bg-green-100 text-green-700') + ' ';
+        if (m.gated)      badges += badge('gated', 'bg-yellow-100 text-yellow-700') + ' ';
+        badges += m.runnable ? badge('runnable', 'bg-indigo-100 text-indigo-700')
+                             : badge('needs more VRAM', 'bg-red-100 text-red-700');
+        var action = m.downloaded
+            ? '<span class="text-xs text-green-500">Ready</span>'
+            : '<button class="dl-btn px-3 py-1 rounded-md bg-indigo-600 hover:bg-indigo-700 text-white text-xs" data-id="' + escHtml(m.id) + '" data-gated="' + (m.gated ? '1' : '') + '">Download</button>';
+        html += '<div class="flex items-center justify-between border border-gray-200 dark:border-gray-700 rounded-lg px-4 py-3">'
+             +    '<div>'
+             +      '<div class="font-medium text-gray-800 dark:text-gray-100">' + escHtml(m.label || m.id) + ' ' + badges + '</div>'
+             +      '<div class="text-xs text-gray-400 font-mono">' + escHtml(m.id) + '</div>'
+             +      (m.min_vram_mb ? '<div class="text-xs text-gray-400">~' + m.min_vram_mb + ' MB VRAM</div>' : '')
+             +      (m.notes ? '<div class="text-xs text-gray-400 mt-0.5">' + escHtml(m.notes) + '</div>' : '')
+             +    '</div>'
+             +    '<div class="dl-slot text-right" data-id="' + escHtml(m.id) + '">' + action + '</div>'
+             +  '</div>';
+    });
+    document.getElementById('models-box').innerHTML = html;
+
+    document.querySelectorAll('.dl-btn').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+            downloadModel(btn.dataset.id, btn.dataset.gated === '1');
+        });
+    });
+}
+
+function downloadModel(modelId, gated) {
+    var token = document.getElementById('inp-hf-token').value.trim();
+    if (gated && !token) {
+        if (!confirm('This is a gated model — without an HF token the download will likely fail. Continue anyway?')) return;
+    }
+    var slot = document.querySelector('.dl-slot[data-id="' + CSS.escape(modelId) + '"]');
+    if (slot) slot.innerHTML = '<span class="text-xs text-gray-400">Starting…</span>';
+    var fd = new FormData();
+    fd.append('model_id', modelId);
+    if (token) fd.append('hf_token', token);
+    fetch("{% url 'image_download' %}", {
+        method: 'POST', headers: {'X-CSRFToken': getCookie('csrftoken')}, body: fd
+    }).then(function(r){return r.json();}).then(function(d){
+        if (!d.success || !d.job_id) { if (slot) slot.innerHTML = '<span class="text-xs text-red-500">' + escHtml(d.error || 'Failed') + '</span>'; return; }
+        pollDownload(d.job_id, modelId);
+    }).catch(function(e){ if (slot) slot.innerHTML = '<span class="text-xs text-red-500">' + escHtml(e) + '</span>'; });
+}
+
+function pollDownload(jobId, modelId) {
+    var slot = document.querySelector('.dl-slot[data-id="' + CSS.escape(modelId) + '"]');
+    fetch("{% url 'image_download_status' %}?job_id=" + encodeURIComponent(jobId))
+        .then(function(r){return r.json();}).then(function(d){
+            if (!slot) return;
+            if (d.state === 'complete') {
+                slot.innerHTML = '<span class="text-xs text-green-500">Downloaded ✓</span>';
+                setTimeout(loadModels, 800);
+            } else if (d.state === 'error') {
+                slot.innerHTML = '<span class="text-xs text-red-500" title="' + escHtml(d.message||'') + '">Error</span>';
+            } else {
+                slot.innerHTML = '<span class="text-xs text-gray-400">' + escHtml(d.message || d.state || 'downloading…') + '</span>';
+                setTimeout(function(){ pollDownload(jobId, modelId); }, 2000);
+            }
+        }).catch(function(){ setTimeout(function(){ pollDownload(jobId, modelId); }, 3000); });
+}
+
+function loadModels() {
+    fetch("{% url 'image_models' %}").then(function(r){return r.json();}).then(function(d){
+        if (!d.success) { serverOffline(d.error); return; }
+        if (d.capability) renderCapability(d.capability);
+        renderModels(d.models);
+    }).catch(function(e){ serverOffline(String(e)); });
+}
+
+function refreshAll() { loadModels(); }
+document.addEventListener('DOMContentLoaded', refreshAll);
+</script>
+{% endblock %}

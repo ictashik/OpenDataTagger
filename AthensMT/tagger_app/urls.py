@@ -16,6 +16,12 @@ urlpatterns = [
     path(f'{BASE_URL}/results/',                   views.results_view,            name='results'),
     path(f'{BASE_URL}/connection/',                views.connection_editor_view,  name='connection_editor'),
     path(f'{BASE_URL}/connection/test/',           views.test_connection_view,    name='test_connection'),
+    path(f'{BASE_URL}/image-backend/',             views.image_backend_view,          name='image_backend'),
+    path(f'{BASE_URL}/image-backend/capability/',  views.image_capability_view,       name='image_capability'),
+    path(f'{BASE_URL}/image-backend/models/',      views.image_models_view,           name='image_models'),
+    path(f'{BASE_URL}/image-backend/download/',    views.image_download_view,         name='image_download'),
+    path(f'{BASE_URL}/image-backend/download/status/', views.image_download_status_view, name='image_download_status'),
+    path(f'{BASE_URL}/image_status/',              views.image_status_view,           name='image_status'),
     path(f'{BASE_URL}/project/<str:project_id>/open/',   views.project_open_view,   name='project_open'),
     path(f'{BASE_URL}/project/<str:project_id>/delete/', views.delete_project_view, name='project_delete'),
 ]

@@ -1,0 +1,18 @@
+# ODT Stable Diffusion server dependencies.
+# Install these ONLY where the server runs (GPU box or your Mac) — the Django
+# app never imports torch/diffusers.
+#
+# For CUDA, install the torch build matching your CUDA version from
+# https://pytorch.org/get-started/locally/ before/instead of the plain torch below.
+fastapi
+uvicorn[standard]
+torch
+diffusers>=0.30
+transformers
+accelerate
+huggingface_hub
+safetensors
+pillow
+psutil
+sentencepiece
+protobuf

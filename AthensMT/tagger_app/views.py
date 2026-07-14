@@ -4,6 +4,7 @@ import json
 import uuid
 import os
 import time
+from itertools import zip_longest
 
 from django.shortcuts import render, redirect
 from django.conf import settings
@@ -20,6 +21,7 @@ from .utils import (
     load_config_file,
     save_config_file,
     LLM_CACHE_KEYS,
+    IMAGE_CACHE_KEYS,
     get_active_connection,
     load_connections,
     save_connection,
@@ -30,7 +32,25 @@ from .utils import (
     get_host_stats,
     read_csv_safe,
     convert_upload_to_csv,
+    load_image_connections,
+    save_image_connection,
+    get_active_image_connection,
+    get_image_capability,
+    get_image_models,
+    get_downloaded_image_models,
+    start_image_download,
+    image_download_status,
 )
+
+
+def _project_mode(request):
+    """Authoritative mode ('text' | 'image') for the session's current project."""
+    pid = request.session.get('project_id')
+    if pid:
+        proj = next((p for p in load_projects() if str(p['project_id']) == str(pid)), None)
+        if proj:
+            return proj.get('mode', 'text') or 'text'
+    return request.session.get('project_mode', 'text') or 'text'
 
 
 # ─── LLM status (sidebar poll) ───────────────────────────────────────────────
@@ -82,6 +102,8 @@ def project_open_view(request, project_id):
 
     request.session['csv_filepath']    = project['csv_path']
     request.session['config_filepath'] = project['config_path'] or None
+    request.session['project_id']      = project['project_id']
+    request.session['project_mode']    = project.get('mode', 'text')
 
     action = request.GET.get('action', 'auto')
 
@@ -126,6 +148,7 @@ def upload_file_view(request):
         if form.is_valid():
             csv_file    = form.cleaned_data['csv_file']
             config_file = form.cleaned_data.get('config_file')
+            mode        = 'image' if request.POST.get('mode') == 'image' else 'text'
 
             fs       = FileSystemStorage(location='media/')
             csv_path = os.path.join('media', csv_file.name)
@@ -145,6 +168,7 @@ def upload_file_view(request):
 
             request.session['csv_filepath']    = csv_path
             request.session['config_filepath'] = config_path
+            request.session['project_mode']    = mode
 
             # Register project
             project_id = str(uuid.uuid4())
@@ -154,6 +178,7 @@ def upload_file_view(request):
                 name=os.path.splitext(csv_file.name)[0],
                 csv_path=csv_path,
                 config_path=config_path or '',
+                mode=mode,
             )
 
             return redirect('define_columns')
@@ -175,6 +200,7 @@ def define_columns_view(request):
     df          = read_csv_safe(csv_path)
     all_columns = df.columns.tolist()
     config_data = load_config_file(config_path)
+    mode        = _project_mode(request)
 
     if request.method == 'POST':
         input_cols       = request.POST.getlist('input_columns')
@@ -186,23 +212,28 @@ def define_columns_view(request):
         default_values   = request.POST.getlist('default_value')
         send_contexts    = request.POST.getlist('send_context')
         tag_input_cols   = request.POST.getlist('tag_input_cols')
+        image_params     = request.POST.getlist('image_params')
 
         new_config = []
-        for oc, pt, cf, cop, cv, dv, sc, tic in zip(
+        # zip_longest: image_params is absent in text mode (fills to ''); other
+        # arrays are always one-per-card thanks to the mirrored-hidden inputs.
+        for oc, pt, cf, cop, cv, dv, sc, tic, ip in zip_longest(
             output_cols, prompts,
             condition_fields, condition_ops, condition_values, default_values,
-            send_contexts, tag_input_cols,
+            send_contexts, tag_input_cols, image_params,
+            fillvalue='',
         ):
-            if oc.strip() and pt.strip():
+            if (oc or '').strip() and (pt or '').strip():
                 new_config.append({
                     "OutputColumn":   oc.strip(),
                     "PromptTemplate": pt.strip(),
-                    "ConditionField": cf.strip(),
-                    "ConditionOp":    cop.strip(),
-                    "ConditionValue": cv.strip(),
-                    "DefaultValue":   dv.strip(),
-                    "SendContext":    sc.strip(),
-                    "InputColumns":   tic.strip(),
+                    "ConditionField": (cf or '').strip(),
+                    "ConditionOp":    (cop or '').strip(),
+                    "ConditionValue": (cv or '').strip(),
+                    "DefaultValue":   (dv or '').strip(),
+                    "SendContext":    (sc or '').strip(),
+                    "InputColumns":   (tic or '').strip(),
+                    "ImageParams":    (ip or '').strip(),
                 })
 
         if not config_path:
@@ -224,7 +255,12 @@ def define_columns_view(request):
         'columns':      all_columns,
         'columns_json': json.dumps(all_columns),
         'config_data':  config_data,
+        'mode':         mode,
+        'image_models': [],
     }
+    if mode == 'image':
+        context['image_models'] = get_downloaded_image_models()
+        context['active_image_connection'] = get_active_image_connection()
     return render(request, 'define_columns.html', context)
 
 
@@ -244,21 +280,22 @@ def tagging_view(request):
     if existing_key and existing_key in PROGRESS_STATUS:
         ps = PROGRESS_STATUS[existing_key]
         if ps['status'] not in ('finished',) and not ps['status'].startswith('error'):
-            return render(request, 'tagging.html', {})
+            return render(request, 'tagging.html', {'mode': _project_mode(request)})
 
     config_data = load_config_file(config_path) if config_path else []
+    mode        = _project_mode(request)
     session_key = str(uuid.uuid4())
     request.session['tagging_session_key'] = session_key
 
     t = threading.Thread(
         target=row_by_row_tagger,
         args=(session_key, csv_path, config_path, input_columns, config_data),
-        kwargs={'project_id': project_id},
+        kwargs={'project_id': project_id, 'mode': mode},
         daemon=True,
     )
     t.start()
 
-    return render(request, 'tagging.html', {})
+    return render(request, 'tagging.html', {'mode': mode})
 
 
 def tagging_progress_view(request):
@@ -330,9 +367,27 @@ def results_view(request):
         else:
             return redirect('upload_file')
 
-    df           = pd.read_csv(tagged_file)
+    df            = pd.read_csv(tagged_file)
     table_columns = df.columns.tolist()
-    table_data    = df.head(10).values.tolist()
+
+    # Build cells tagged with whether they point at a generated image, so the
+    # template can render a thumbnail instead of a raw path.
+    image_exts = ('.png', '.jpg', '.jpeg', '.webp')
+    table_rows = []
+    for row in df.head(10).values.tolist():
+        cells = []
+        for cell in row:
+            if isinstance(cell, float) and pd.isna(cell):
+                cells.append({'value': '', 'is_image': False, 'url': ''})
+                continue
+            sval   = str(cell)
+            is_img = sval.lower().endswith(image_exts)
+            cells.append({
+                'value':    sval,
+                'is_image': is_img,
+                'url':      (settings.MEDIA_URL + sval) if is_img else '',
+            })
+        table_rows.append(cells)
 
     tagged_file_url = settings.MEDIA_URL + os.path.basename(tagged_file)
     logs_file_url   = (settings.MEDIA_URL + os.path.basename(logs_file)) if logs_file and os.path.exists(logs_file) else None
@@ -341,7 +396,8 @@ def results_view(request):
         "tagged_file_url": tagged_file_url,
         "logs_file_url":   logs_file_url,
         "table_columns":   table_columns,
-        "table_data":      table_data,
+        "table_rows":      table_rows,
+        "mode":            _project_mode(request),
     })
 
 
@@ -382,3 +438,74 @@ def test_connection_view(request):
             return JsonResponse({'success': True, 'models': models})
     except Exception as e:
         return JsonResponse({'success': False, 'error': str(e)})
+
+
+# ─── Image backend (Stable Diffusion server) ─────────────────────────────────
+
+def image_backend_view(request):
+    """GET: model catalog + capability UI. POST: save the SD server host/port."""
+    if request.method == 'POST':
+        host  = request.POST.get('host', '').strip()
+        port  = request.POST.get('port', '').strip()
+        model = request.POST.get('model', '').strip()
+        if host and port:
+            save_image_connection(host, port, model)
+            return JsonResponse({'success': True, 'message': 'Image backend saved.'})
+        return JsonResponse({'success': False, 'message': 'Host and port are required.'}, status=400)
+
+    return render(request, 'image_backend.html', {
+        'connections': load_image_connections(),
+        'active':      get_active_image_connection(),
+    })
+
+
+def image_capability_view(request):
+    try:
+        return JsonResponse({'success': True, 'capability': get_image_capability()})
+    except Exception as e:
+        return JsonResponse({'success': False, 'error': str(e)})
+
+
+def image_models_view(request):
+    try:
+        return JsonResponse({'success': True, **get_image_models()})
+    except Exception as e:
+        return JsonResponse({'success': False, 'error': str(e)})
+
+
+def image_download_view(request):
+    if request.method != 'POST':
+        return JsonResponse({'success': False, 'error': 'POST required.'}, status=400)
+    model_id = request.POST.get('model_id', '').strip()
+    hf_token = request.POST.get('hf_token', '').strip() or None
+    if not model_id:
+        return JsonResponse({'success': False, 'error': 'model_id is required.'}, status=400)
+    try:
+        return JsonResponse({'success': True, **start_image_download(model_id, hf_token)})
+    except Exception as e:
+        return JsonResponse({'success': False, 'error': str(e)})
+
+
+def image_download_status_view(request):
+    job_id = request.GET.get('job_id', '').strip()
+    if not job_id:
+        return JsonResponse({'success': False, 'error': 'job_id is required.'}, status=400)
+    try:
+        return JsonResponse({'success': True, **image_download_status(job_id)})
+    except Exception as e:
+        return JsonResponse({'success': False, 'error': str(e)})
+
+
+def image_status_view(request):
+    """Sidebar poll — active SD server + image-generation counters."""
+    conn          = get_active_image_connection()
+    request_count = cache.get(IMAGE_CACHE_KEYS["requests"], 0)
+    total_time    = cache.get(IMAGE_CACHE_KEYS["total_time"], 0.0)
+    return JsonResponse({
+        "host":       conn.get('host', ''),
+        "port":       conn.get('port', ''),
+        "model":      conn.get('model', '') or '—',
+        "requests":   request_count,
+        "total_time": f"{total_time:.1f} sec",
+        "status":     "Active" if request_count > 0 else "Idle",
+    })

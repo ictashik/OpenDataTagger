@@ -8,7 +8,30 @@
 
         <form method="post" enctype="multipart/form-data" class="space-y-4">
             {% csrf_token %}
-            
+
+            <!-- Mode selector -->
+            <div>
+                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Project Type</label>
+                <div class="grid grid-cols-2 gap-3">
+                    <label class="mode-option cursor-pointer border-2 rounded-lg p-3 flex items-start gap-2 border-indigo-500 bg-indigo-50 dark:bg-indigo-900/20"
+                           data-mode="text">
+                        <input type="radio" name="mode" value="text" class="mode-radio mt-0.5" checked>
+                        <span>
+                            <span class="block text-sm font-semibold text-gray-900 dark:text-gray-100">Text Tagging</span>
+                            <span class="block text-xs text-gray-500 dark:text-gray-400">Tag each row with an LLM (Ollama).</span>
+                        </span>
+                    </label>
+                    <label class="mode-option cursor-pointer border-2 rounded-lg p-3 flex items-start gap-2 border-gray-200 dark:border-gray-600"
+                           data-mode="image">
+                        <input type="radio" name="mode" value="image" class="mode-radio mt-0.5">
+                        <span>
+                            <span class="block text-sm font-semibold text-gray-900 dark:text-gray-100">Image Generation</span>
+                            <span class="block text-xs text-gray-500 dark:text-gray-400">Generate an image per row with Stable Diffusion.</span>
+                        </span>
+                    </label>
+                </div>
+            </div>
+
             <!-- CSV File Input -->
             <div>
                 <label class="block text-sm font-medium text-gray-700 dark:text-gray-300">Upload CSV File</label>
@@ -27,4 +50,19 @@
         </form>
     </div>
 </div>
+
+<script>
+    // Highlight the selected mode card.
+    document.querySelectorAll('.mode-option').forEach(function (opt) {
+        opt.addEventListener('click', function () {
+            document.querySelectorAll('.mode-option').forEach(function (o) {
+                o.classList.remove('border-indigo-500', 'bg-indigo-50', 'dark:bg-indigo-900/20');
+                o.classList.add('border-gray-200', 'dark:border-gray-600');
+            });
+            opt.classList.remove('border-gray-200', 'dark:border-gray-600');
+            opt.classList.add('border-indigo-500', 'bg-indigo-50', 'dark:bg-indigo-900/20');
+            opt.querySelector('.mode-radio').checked = true;
+        });
+    });
+</script>
 {% endblock %}

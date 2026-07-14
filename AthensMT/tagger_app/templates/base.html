@@ -39,18 +39,29 @@
                     <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M12 5l7 7-7 7"/></svg>
                     Connection
                 </a>
+                <a href="{% url 'image_backend' %}" class="block px-4 py-2 rounded-md bg-gray-700 hover:bg-gray-600 flex items-center gap-2">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+                    Image Backend
+                </a>
             </nav>
         </div>
         
         
         <!-- LLM Stats -->
-        <div class="p-4 bg-gray-900 rounded-lg text-gray-300">
-            <h5 class="text-lg font-medium text-white">LLM Status</h5>
-            <p class="text-sm">Model: <span id="llm-model">N/A</span></p>
-            <!-- <p class="text-sm">Server: <span id="llm-server">Athens [10.20.110.114]</span></p> -->
-            <p class="text-sm">Requests: <span id="llm-requests">0</span></p>
-            <p class="text-sm">Total Time: <span id="llm-total-time">0 sec</span></p>
-            <p class="text-sm">Avg Speed: <span id="llm-speed">0 sec/request</span></p>
+        <div class="p-4 bg-gray-900 rounded-lg text-gray-300 space-y-3">
+            <div>
+                <h5 class="text-lg font-medium text-white">LLM Status</h5>
+                <p class="text-sm">Model: <span id="llm-model">N/A</span></p>
+                <p class="text-sm">Requests: <span id="llm-requests">0</span></p>
+                <p class="text-sm">Total Time: <span id="llm-total-time">0 sec</span></p>
+                <p class="text-sm">Avg Speed: <span id="llm-speed">0 sec/request</span></p>
+            </div>
+            <div class="border-t border-gray-700 pt-3">
+                <h5 class="text-sm font-medium text-white">Image Backend</h5>
+                <p class="text-xs">Server: <span id="img-host">—</span></p>
+                <p class="text-xs">Model: <span id="img-model">—</span></p>
+                <p class="text-xs">Images: <span id="img-requests">0</span></p>
+            </div>
         </div>
     </div>
     
@@ -91,8 +102,22 @@
             }
         }
 
+        async function updateImageStats() {
+            try {
+                let response = await fetch("{% url 'image_status' %}");
+                let data = await response.json();
+                document.getElementById("img-host").innerText = data.host ? (data.host + ':' + data.port) : '—';
+                document.getElementById("img-model").innerText = data.model || '—';
+                document.getElementById("img-requests").innerText = data.requests;
+            } catch (error) {
+                console.error("Error fetching image stats:", error);
+            }
+        }
+
         setInterval(updateLLMStats, 2000);
         updateLLMStats();
+        setInterval(updateImageStats, 3000);
+        updateImageStats();
     </script>
 </body>
 </html>
