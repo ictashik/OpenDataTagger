@@ -34,15 +34,23 @@ def _load(model_id, token=None):
     from diffusers import AutoPipelineForText2Image
 
     device, dtype = _select_device_dtype()
+    common = dict(torch_dtype=dtype, token=token or None)
+    # The safety_checker weights aren't downloaded (see downloader.py), and
+    # pipeline classes without one (SDXL/SD3/FLUX) don't accept the kwarg at
+    # all — try with it disabled first, fall back for those that reject it.
     try:
         pipe = AutoPipelineForText2Image.from_pretrained(
-            model_id, torch_dtype=dtype, token=token or None, use_safetensors=True,
+            model_id, use_safetensors=True, safety_checker=None,
+            requires_safety_checker=False, **common,
         )
-    except Exception:
-        # Some repos don't ship safetensors — retry without the flag.
-        pipe = AutoPipelineForText2Image.from_pretrained(
-            model_id, torch_dtype=dtype, token=token or None,
-        )
+    except TypeError:
+        try:
+            pipe = AutoPipelineForText2Image.from_pretrained(
+                model_id, use_safetensors=True, **common,
+            )
+        except Exception:
+            # Some repos don't ship safetensors — retry without the flag.
+            pipe = AutoPipelineForText2Image.from_pretrained(model_id, **common)
 
     pipe = pipe.to(device)
     for opt in ("enable_attention_slicing", "enable_vae_slicing"):

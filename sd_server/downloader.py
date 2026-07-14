@@ -4,8 +4,36 @@ Downloads run in daemon threads; their state lives in an in-memory dict keyed
 by job id and is polled over HTTP. Gated repos (SD 3.5, FLUX.1-dev) require a
 Hugging Face token, passed straight through to huggingface_hub.
 """
+import os
 import threading
 import uuid
+
+# huggingface_hub's per-chunk stall timeout defaults to 10s, which large
+# weight files on a slow/congested link routinely exceed. Must be set before
+# huggingface_hub is first imported anywhere in the process (it reads this
+# into a module-level constant at import time) — this module is imported
+# before any lazy `from huggingface_hub import ...` below, so set it here.
+os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "120")
+
+# The hf_xet accelerated-transfer backend (auto-used whenever the hf_xet
+# package is installed) has its own network stack that does NOT honor
+# HF_HUB_DOWNLOAD_TIMEOUT above — a stalled chunk can hang indefinitely with
+# zero CPU use and no error. Disable it so downloads fall back to plain HTTP
+# GETs, which do respect the timeout and fail (then retry/report) instead of
+# hanging forever. Must be set before huggingface_hub is first imported, same
+# reasoning as above.
+os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
+
+# Diffusers model repos commonly carry multiple redundant weight formats in
+# one repo: standalone .ckpt "pruned" checkpoints, .bin duplicates of the
+# .safetensors we actually load, and a safety_checker we don't use. For
+# stable-diffusion-v1-5 alone this is the difference between a ~5.5GB and a
+# ~36GB download. Skip them all — the diffusers `from_pretrained` calls in
+# models.py only ever need the *.safetensors component weights + configs.
+_IGNORE_PATTERNS = [
+    "*.ckpt", "*.bin", "*.pt", "*.msgpack", "*.onnx", "*.ot", "*.h5",
+    "safety_checker/*",
+]
 
 _jobs = {}
 _jobs_lock = threading.Lock()
@@ -21,7 +49,8 @@ def _run(job_id, model_id, token):
     from huggingface_hub import snapshot_download
     _set(job_id, state="downloading", message="Downloading model files…")
     try:
-        snapshot_download(repo_id=model_id, token=token or None)
+        snapshot_download(repo_id=model_id, token=token or None,
+                          ignore_patterns=_IGNORE_PATTERNS)
         _set(job_id, state="complete", message="Download complete.")
     except Exception as e:
         msg = str(e)
