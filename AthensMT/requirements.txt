@@ -1,0 +1,5 @@
+# Runtime dependencies for the Django app (AthensMT).
+# The repo-root requirements.txt is stale (see CLAUDE.md) — this is the real list.
+Django>=5.0
+pandas
+openai

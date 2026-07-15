@@ -1,0 +1,29 @@
+# SD server only. On Apple Silicon this falls back to CPU (slow) since Docker
+# Desktop's Linux VM can't pass through the MPS GPU — run it natively on Mac
+# instead (see sd_server/README.md). On Linux with an NVIDIA GPU, uncomment
+# the `deploy` block below and build with the matching TORCH_INDEX_URL.
+#
+# Usage: docker compose -f docker-compose.server.yml up --build
+services:
+  sd_server:
+    build:
+      context: ./sd_server
+      # args:
+      #   TORCH_INDEX_URL: https://download.pytorch.org/whl/cu121
+    ports:
+      - "7860:7860"
+    volumes:
+      - ./sd_server:/app
+      - hf_cache:/root/.cache/huggingface
+    environment:
+      - PYTHONUNBUFFERED=1
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+volumes:
+  hf_cache:

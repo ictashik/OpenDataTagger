@@ -1,0 +1,22 @@
+# Django app only. Ollama and the SD server (if used) run elsewhere — point
+# them at this container via the Connection Editor / Image Backend pages in
+# the UI (settings are stored in connections.csv / image_connections.csv, not
+# env vars).
+#
+# Usage: docker compose -f docker-compose.app.yml up --build
+services:
+  app:
+    build:
+      context: ./AthensMT
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./AthensMT:/app
+    environment:
+      - PYTHONUNBUFFERED=1
+    # Lets the container reach an Ollama/SD server running on the host itself
+    # (e.g. host set to "host.docker.internal" in the UI). Docker Desktop
+    # (Mac/Windows) maps this automatically; this entry adds the same mapping
+    # on Linux.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
