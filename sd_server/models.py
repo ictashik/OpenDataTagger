@@ -1,9 +1,10 @@
 """Pipeline load/cache + generation for the SD server.
 
-One pipeline is kept in memory at a time (single-GPU assumption). Switching
-models frees the previous pipeline first. A module-level lock serialises
-generation so concurrent requests don't fight over the GPU — this matches
-ODT's row-by-row (sequential) tagging loop.
+One pipeline — and its attached LoRA stack + scheduler — is kept in memory at
+a time (single-GPU assumption). Switching any of them frees/reloads as
+needed. A module-level lock serialises generation so concurrent requests
+don't fight over the GPU — this matches ODT's row-by-row (sequential)
+tagging loop.
 """
 import inspect
 import threading
@@ -12,11 +13,34 @@ import time
 from capability import detect_capability
 
 _lock = threading.Lock()
-_loaded = {"model_id": None, "pipe": None, "device": "cpu"}
+_loaded = {
+    "model_id": None, "pipe": None, "device": "cpu",
+    "lora_ids": [],            # ids of the currently-loaded LoRA stack, in order
+    "scheduler_key": "default",
+    "default_scheduler_cls": None,
+    "default_scheduler_config": None,
+}
+
+# A curated set of well-known schedulers/samplers — the single biggest lever
+# on output quality/speed after steps. "default" leaves whatever the pipeline
+# shipped with (restored from the config cached at load time).
+SCHEDULERS = {
+    "default":         {"label": "Default (as shipped)"},
+    "dpmpp_2m":        {"label": "DPM++ 2M", "cls": "DPMSolverMultistepScheduler"},
+    "dpmpp_2m_karras": {"label": "DPM++ 2M Karras", "cls": "DPMSolverMultistepScheduler",
+                       "kwargs": {"use_karras_sigmas": True}},
+    "euler":           {"label": "Euler", "cls": "EulerDiscreteScheduler"},
+    "euler_a":         {"label": "Euler Ancestral", "cls": "EulerAncestralDiscreteScheduler"},
+    "ddim":            {"label": "DDIM", "cls": "DDIMScheduler"},
+}
 
 
 def get_loaded_model():
     return _loaded["model_id"]
+
+
+def get_loaded_loras():
+    return list(_loaded["lora_ids"])
 
 
 def _select_device_dtype():
@@ -69,6 +93,8 @@ def ensure_loaded(model_id, token=None):
     if _loaded["pipe"] is not None:
         _loaded["pipe"] = None
         _loaded["model_id"] = None
+        _loaded["lora_ids"] = []  # a fresh pipe has no LoRA attached
+        _loaded["scheduler_key"] = "default"
         try:
             import torch
             if torch.cuda.is_available():
@@ -77,17 +103,66 @@ def ensure_loaded(model_id, token=None):
             pass
 
     pipe, device = _load(model_id, token)
+    # Cache the pipeline's original scheduler so "default" can be restored
+    # after switching to something else.
+    _loaded["default_scheduler_cls"] = type(pipe.scheduler)
+    _loaded["default_scheduler_config"] = dict(pipe.scheduler.config)
     _loaded.update(model_id=model_id, pipe=pipe, device=device)
     return pipe
 
 
+def _ensure_loras(pipe, loras, token=None):
+    """Attach a stack of LoRAs (each {'id':..., 'scale':...}) on the loaded
+    pipeline. Strengths are applied via set_adapters — changing scale alone
+    doesn't require reloading weights, only a different *set* of LoRA ids does."""
+    loras = [
+        {"id": (l.get("id") or "").strip(), "scale": float(l.get("scale", 1.0))}
+        for l in (loras or []) if (l.get("id") or "").strip()
+    ]
+    ids = [l["id"] for l in loras]
+
+    if ids != _loaded.get("lora_ids"):
+        if _loaded.get("lora_ids"):
+            try:
+                pipe.unload_lora_weights()
+            except Exception:
+                pass
+        for i, l in enumerate(loras):
+            pipe.load_lora_weights(l["id"], adapter_name=f"lora{i}", token=token or None)
+        _loaded["lora_ids"] = ids
+
+    if loras:
+        adapter_names = [f"lora{i}" for i in range(len(loras))]
+        pipe.set_adapters(adapter_names, adapter_weights=[l["scale"] for l in loras])
+
+
+def _ensure_scheduler(pipe, scheduler_key):
+    scheduler_key = scheduler_key or "default"
+    if _loaded.get("scheduler_key") == scheduler_key:
+        return
+    spec = SCHEDULERS.get(scheduler_key, SCHEDULERS["default"])
+    if scheduler_key == "default" or "cls" not in spec:
+        cls = _loaded["default_scheduler_cls"]
+        config = _loaded["default_scheduler_config"]
+    else:
+        import diffusers
+        cls = getattr(diffusers, spec["cls"])
+        config = dict(pipe.scheduler.config)
+        config.update(spec.get("kwargs", {}))
+    pipe.scheduler = cls.from_config(config)
+    _loaded["scheduler_key"] = scheduler_key
+
+
 def generate(model_id, prompt, negative_prompt="", width=512, height=512,
-             steps=30, guidance_scale=7.5, seed=-1, num_images=1, token=None):
+             steps=30, guidance_scale=7.5, seed=-1, num_images=1, token=None,
+             loras=None, scheduler=None):
     """Return (list_of_PIL_images, seed_used, elapsed_sec)."""
     import torch
 
     with _lock:
         pipe = ensure_loaded(model_id, token)
+        _ensure_loras(pipe, loras, token)
+        _ensure_scheduler(pipe, scheduler)
         device = _loaded["device"]
 
         if seed is None or int(seed) < 0:

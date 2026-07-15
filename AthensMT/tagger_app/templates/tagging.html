@@ -63,7 +63,15 @@ function appendLogs(logs) {
         var entry = document.createElement('div');
         entry.className = 'border-b border-gray-800 pb-2';
         var answerLine;
-        if (log.image_url) {
+        if (log.image_urls && log.image_urls.length > 1) {
+            // Batch grid preview: multiple images from one num_images > 1 call.
+            answerLine = '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;">' +
+                log.image_urls.map(function(url) {
+                    return '<a href="' + escHtml(url) + '" target="_blank">' +
+                        '<img src="' + escHtml(url) + '" alt="generated" ' +
+                        'style="max-height:120px;border-radius:6px;border:1px solid #374151;"></a>';
+                }).join('') + '</div><br>';
+        } else if (log.image_url) {
             answerLine =
                 '<a href="' + escHtml(log.image_url) + '" target="_blank">' +
                 '<img src="' + escHtml(log.image_url) + '" alt="generated" ' +

@@ -13,7 +13,7 @@ import base64
 import io
 import json
 import os
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
@@ -25,11 +25,20 @@ from capability import detect_capability
 app = FastAPI(title="ODT Stable Diffusion Server")
 
 CATALOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "catalog.json")
+LORA_CATALOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "lora_catalog.json")
 
 
 def load_catalog():
     try:
         with open(CATALOG_PATH) as f:
+            return json.load(f)
+    except Exception:
+        return []
+
+
+def load_lora_catalog():
+    try:
+        with open(LORA_CATALOG_PATH) as f:
             return json.load(f)
     except Exception:
         return []
@@ -74,22 +83,54 @@ def list_models():
     return {"capability": cap, "models": out}
 
 
+@app.get("/loras")
+def list_loras():
+    """LoRAs are plain HF repos downloaded via the same /download endpoint
+    (kind='lora'); which ones are LoRAs is tracked in downloader's registry
+    since that can't be inferred from the shared HF cache alone."""
+    downloaded = downloader.downloaded_lora_ids()
+    catalog = load_lora_catalog()
+    catalog_ids = {l["id"] for l in catalog}
+
+    out = []
+    for l in catalog:
+        entry = dict(l)
+        entry["downloaded"] = l["id"] in downloaded
+        out.append(entry)
+    for rid in sorted(downloaded - catalog_ids):
+        out.append({"id": rid, "label": rid, "gated": False, "downloaded": True,
+                    "notes": "Downloaded via custom repo ID."})
+    return {"loras": out}
+
+
 class DownloadReq(BaseModel):
     model_id: str
     hf_token: Optional[str] = None
+    kind: Optional[str] = "model"  # "model" or "lora"
 
 
 @app.post("/download")
 def download(req: DownloadReq):
     if not req.model_id:
         raise HTTPException(status_code=400, detail="model_id is required")
-    job_id = downloader.start_download(req.model_id, req.hf_token)
+    kind = req.kind if req.kind in ("model", "lora") else "model"
+    job_id = downloader.start_download(req.model_id, req.hf_token, kind=kind)
     return {"job_id": job_id}
 
 
 @app.get("/download/status")
 def download_status(job_id: str):
     return downloader.status(job_id)
+
+
+@app.get("/schedulers")
+def list_schedulers():
+    return {"schedulers": [{"key": k, "label": v["label"]} for k, v in model_mgr.SCHEDULERS.items()]}
+
+
+class LoraSpec(BaseModel):
+    id: str
+    scale: float = 1.0
 
 
 class GenerateReq(BaseModel):
@@ -103,6 +144,8 @@ class GenerateReq(BaseModel):
     seed: int = -1
     num_images: int = 1
     hf_token: Optional[str] = None
+    loras: List[LoraSpec] = []
+    scheduler: Optional[str] = "default"
 
 
 @app.post("/generate")
@@ -121,6 +164,8 @@ def generate(req: GenerateReq):
             seed=req.seed,
             num_images=req.num_images,
             token=req.hf_token,
+            loras=[l.dict() for l in req.loras],
+            scheduler=req.scheduler,
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

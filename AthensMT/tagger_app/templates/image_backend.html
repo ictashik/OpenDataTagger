@@ -64,6 +64,69 @@
         <h2 class="text-base font-semibold text-gray-800 dark:text-gray-100 mb-3">Models</h2>
         <div id="models-box" class="space-y-2 text-sm text-gray-600 dark:text-gray-300">Loading…</div>
     </div>
+
+    <!-- LoRA styles -->
+    <div class="bg-white dark:bg-gray-800 rounded-lg shadow p-6">
+        <h2 class="text-base font-semibold text-gray-800 dark:text-gray-100 mb-1">
+            Style Add-ons <span class="text-gray-400 font-normal">(LoRA)</span>
+        </h2>
+        <p class="text-xs text-gray-500 dark:text-gray-400 mb-3">
+            A style add-on nudges a base model toward a particular look — an art style, a
+            character, a photo aesthetic — without needing a whole new model. They're small
+            (usually under 200MB) and layer on top of whichever base model you pick.
+            Once downloaded, each image tag in Define Columns can turn one on and set how
+            strongly it applies.
+        </p>
+        <p class="text-xs text-gray-500 dark:text-gray-400 mb-3">
+            To add one, search Hugging Face for a LoRA compatible with your base model and
+            paste its repo ID below (format: <code class="text-[11px]">username/repo-name</code>).
+        </p>
+        <div class="flex gap-2 mb-4">
+            <input id="inp-lora-repo" type="text" placeholder="e.g. username/some-style-lora"
+                class="flex-1 px-3 py-2 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-sm text-gray-900 dark:text-gray-100 font-mono">
+            <button onclick="downloadCustomLora()"
+                class="px-4 py-2 rounded-md bg-purple-600 hover:bg-purple-700 text-white text-sm font-medium">Download</button>
+        </div>
+        <div id="loras-box" class="space-y-2 text-sm text-gray-600 dark:text-gray-300">Loading…</div>
+    </div>
+
+    <!-- Compare Models -->
+    <div class="bg-white dark:bg-gray-800 rounded-lg shadow p-6">
+        <h2 class="text-base font-semibold text-gray-800 dark:text-gray-100 mb-1">Compare Models</h2>
+        <p class="text-xs text-gray-500 dark:text-gray-400 mb-3">
+            Run the same prompt across several downloaded models side-by-side, so you can pick
+            the best fit before committing to one in Define Columns.
+        </p>
+        <div class="space-y-3">
+            <div>
+                <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Prompt</label>
+                <textarea id="cmp-prompt" rows="2"
+                    class="w-full px-3 py-2 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-sm text-gray-900 dark:text-gray-100"
+                    placeholder="e.g. a portrait of a red fox, photorealistic, studio lighting"></textarea>
+            </div>
+            <div>
+                <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Negative prompt <span class="font-normal text-gray-400">(optional)</span></label>
+                <input id="cmp-neg" type="text"
+                    class="w-full px-3 py-2 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-sm text-gray-900 dark:text-gray-100">
+            </div>
+            <div class="grid grid-cols-4 gap-2">
+                <div><label class="block text-[11px] text-gray-500 dark:text-gray-400 mb-0.5">Width</label>
+                    <input id="cmp-width" type="number" value="512" class="w-full px-2 py-1 rounded border border-gray-300 dark:border-gray-600 text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"></div>
+                <div><label class="block text-[11px] text-gray-500 dark:text-gray-400 mb-0.5">Height</label>
+                    <input id="cmp-height" type="number" value="512" class="w-full px-2 py-1 rounded border border-gray-300 dark:border-gray-600 text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"></div>
+                <div><label class="block text-[11px] text-gray-500 dark:text-gray-400 mb-0.5">Steps</label>
+                    <input id="cmp-steps" type="number" value="30" class="w-full px-2 py-1 rounded border border-gray-300 dark:border-gray-600 text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"></div>
+                <div><label class="block text-[11px] text-gray-500 dark:text-gray-400 mb-0.5">Guidance</label>
+                    <input id="cmp-guidance" type="number" step="0.1" value="7.5" class="w-full px-2 py-1 rounded border border-gray-300 dark:border-gray-600 text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"></div>
+            </div>
+            <div>
+                <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Models to compare <span class="font-normal text-gray-400">(up to 6, downloaded only)</span></label>
+                <div id="cmp-model-list" class="flex flex-wrap gap-2">Loading…</div>
+            </div>
+            <button id="cmp-run-btn" class="px-4 py-2 rounded-md bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium">Compare</button>
+        </div>
+        <div id="cmp-results" class="mt-4 grid grid-cols-2 sm:grid-cols-3 gap-4"></div>
+    </div>
 </div>
 
 <script>
@@ -161,39 +224,51 @@ function renderModels(models) {
     });
 }
 
-function downloadModel(modelId, gated) {
+function downloadModel(modelId, gated, kind, slotSelector) {
+    kind = kind || 'model';
     var token = document.getElementById('inp-hf-token').value.trim();
     if (gated && !token) {
         if (!confirm('This is a gated model — without an HF token the download will likely fail. Continue anyway?')) return;
     }
-    var slot = document.querySelector('.dl-slot[data-id="' + CSS.escape(modelId) + '"]');
+    var slot = document.querySelector(slotSelector || ('.dl-slot[data-id="' + CSS.escape(modelId) + '"]'));
     if (slot) slot.innerHTML = '<span class="text-xs text-gray-400">Starting…</span>';
     var fd = new FormData();
     fd.append('model_id', modelId);
+    fd.append('kind', kind);
     if (token) fd.append('hf_token', token);
     fetch("{% url 'image_download' %}", {
         method: 'POST', headers: {'X-CSRFToken': getCookie('csrftoken')}, body: fd
     }).then(function(r){return r.json();}).then(function(d){
         if (!d.success || !d.job_id) { if (slot) slot.innerHTML = '<span class="text-xs text-red-500">' + escHtml(d.error || 'Failed') + '</span>'; return; }
-        pollDownload(d.job_id, modelId);
+        pollDownload(d.job_id, modelId, kind, slotSelector);
     }).catch(function(e){ if (slot) slot.innerHTML = '<span class="text-xs text-red-500">' + escHtml(e) + '</span>'; });
 }
 
-function pollDownload(jobId, modelId) {
-    var slot = document.querySelector('.dl-slot[data-id="' + CSS.escape(modelId) + '"]');
+function pollDownload(jobId, modelId, kind, slotSelector) {
+    var slot = document.querySelector(slotSelector || ('.dl-slot[data-id="' + CSS.escape(modelId) + '"]'));
     fetch("{% url 'image_download_status' %}?job_id=" + encodeURIComponent(jobId))
         .then(function(r){return r.json();}).then(function(d){
             if (!slot) return;
             if (d.state === 'complete') {
                 slot.innerHTML = '<span class="text-xs text-green-500">Downloaded ✓</span>';
-                setTimeout(loadModels, 800);
+                setTimeout(function() { loadModels(); loadLoras(); }, 800);
             } else if (d.state === 'error') {
                 slot.innerHTML = '<span class="text-xs text-red-500" title="' + escHtml(d.message||'') + '">Error</span>';
             } else {
-                slot.innerHTML = '<span class="text-xs text-gray-400">' + escHtml(d.message || d.state || 'downloading…') + '</span>';
-                setTimeout(function(){ pollDownload(jobId, modelId); }, 2000);
+                // Real progress: files done/total from the tqdm hook in downloader.py.
+                var pct = (d.progress !== null && d.progress !== undefined) ? d.progress : null;
+                if (pct !== null) {
+                    slot.innerHTML =
+                        '<div style="width:120px;">' +
+                        '<div class="text-[10px] text-gray-400 mb-0.5">' + (d.files_done||0) + '/' + (d.files_total||'?') + ' files</div>' +
+                        '<div class="bg-gray-200 dark:bg-gray-700 rounded-full h-1.5"><div class="bg-indigo-500 h-1.5 rounded-full" style="width:' + pct + '%"></div></div>' +
+                        '</div>';
+                } else {
+                    slot.innerHTML = '<span class="text-xs text-gray-400">' + escHtml(d.message || d.state || 'downloading…') + '</span>';
+                }
+                setTimeout(function(){ pollDownload(jobId, modelId, kind, slotSelector); }, 1500);
             }
-        }).catch(function(){ setTimeout(function(){ pollDownload(jobId, modelId); }, 3000); });
+        }).catch(function(){ setTimeout(function(){ pollDownload(jobId, modelId, kind, slotSelector); }, 3000); });
 }
 
 function loadModels() {
@@ -201,10 +276,121 @@ function loadModels() {
         if (!d.success) { serverOffline(d.error); return; }
         if (d.capability) renderCapability(d.capability);
         renderModels(d.models);
+        renderCompareModelChecklist(d.models);
     }).catch(function(e){ serverOffline(String(e)); });
 }
 
-function refreshAll() { loadModels(); }
+function renderLoras(loras) {
+    var box = document.getElementById('loras-box');
+    if (!loras || !loras.length) {
+        box.innerHTML = '<p class="text-gray-400">No LoRAs downloaded yet — paste a Hugging Face repo ID above.</p>';
+        return;
+    }
+    var html = '';
+    loras.forEach(function(l) {
+        var badges = '';
+        if (l.downloaded) badges += badge('downloaded', 'bg-green-100 text-green-700') + ' ';
+        if (l.gated)      badges += badge('gated', 'bg-yellow-100 text-yellow-700') + ' ';
+        var action = l.downloaded
+            ? '<span class="text-xs text-green-500">Ready</span>'
+            : '<button class="lora-dl-btn px-3 py-1 rounded-md bg-purple-600 hover:bg-purple-700 text-white text-xs" data-id="' + escHtml(l.id) + '" data-gated="' + (l.gated ? '1' : '') + '">Download</button>';
+        html += '<div class="flex items-center justify-between border border-gray-200 dark:border-gray-700 rounded-lg px-4 py-3">'
+             +    '<div>'
+             +      '<div class="font-medium text-gray-800 dark:text-gray-100">' + escHtml(l.label || l.id) + ' ' + badges + '</div>'
+             +      '<div class="text-xs text-gray-400 font-mono">' + escHtml(l.id) + '</div>'
+             +      (l.notes ? '<div class="text-xs text-gray-400 mt-0.5">' + escHtml(l.notes) + '</div>' : '')
+             +    '</div>'
+             +    '<div class="dl-slot text-right" data-id="lora-' + escHtml(l.id) + '">' + action + '</div>'
+             +  '</div>';
+    });
+    box.innerHTML = html;
+    document.querySelectorAll('.lora-dl-btn').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+            downloadModel(btn.dataset.id, btn.dataset.gated === '1', 'lora',
+                '.dl-slot[data-id="lora-' + CSS.escape(btn.dataset.id) + '"]');
+        });
+    });
+}
+
+function loadLoras() {
+    fetch("{% url 'image_loras' %}").then(function(r){return r.json();}).then(function(d){
+        if (!d.success) { document.getElementById('loras-box').innerHTML = '<p class="text-gray-400">SD server unreachable.</p>'; return; }
+        renderLoras(d.loras);
+    }).catch(function(){ document.getElementById('loras-box').innerHTML = '<p class="text-gray-400">SD server unreachable.</p>'; });
+}
+
+function downloadCustomLora() {
+    var repoId = document.getElementById('inp-lora-repo').value.trim();
+    if (!repoId) return;
+    var box = document.getElementById('loras-box');
+    box.insertAdjacentHTML('afterbegin',
+        '<div class="dl-slot text-xs text-gray-400" data-id="lora-' + escHtml(repoId) + '">Starting ' + escHtml(repoId) + '…</div>');
+    downloadModel(repoId, false, 'lora', '.dl-slot[data-id="lora-' + CSS.escape(repoId) + '"]');
+    document.getElementById('inp-lora-repo').value = '';
+}
+
+function refreshAll() { loadModels(); loadLoras(); }
 document.addEventListener('DOMContentLoaded', refreshAll);
+
+/* ═══ Compare Models ═════════════════════════════════════════════ */
+function renderCompareModelChecklist(models) {
+    var box = document.getElementById('cmp-model-list');
+    if (!box) return;
+    var downloaded = (models || []).filter(function(m) { return m.downloaded; });
+    if (!downloaded.length) {
+        box.innerHTML = '<p class="text-gray-400 text-xs">No models downloaded yet — download at least one above.</p>';
+        return;
+    }
+    box.innerHTML = downloaded.map(function(m) {
+        return '<label class="flex items-center gap-1.5 border border-gray-200 dark:border-gray-700 rounded px-2 py-1 cursor-pointer text-gray-700 dark:text-gray-200">' +
+            '<input type="checkbox" class="cmp-model-cb" value="' + escHtml(m.id) + '"> ' +
+            '<span class="text-xs">' + escHtml(m.label || m.id) + '</span></label>';
+    }).join('');
+}
+
+function runCompareModels() {
+    var prompt     = document.getElementById('cmp-prompt').value.trim();
+    var resultsBox = document.getElementById('cmp-results');
+    if (!prompt) { resultsBox.innerHTML = '<p class="text-red-500 text-xs">Write a prompt first.</p>'; return; }
+
+    var ids = Array.from(document.querySelectorAll('.cmp-model-cb:checked')).map(function(cb) { return cb.value; });
+    if (!ids.length) { resultsBox.innerHTML = '<p class="text-red-500 text-xs">Pick at least one model.</p>'; return; }
+    if (ids.length > 6) { resultsBox.innerHTML = '<p class="text-red-500 text-xs">Pick at most 6 models at a time.</p>'; return; }
+
+    var btn = document.getElementById('cmp-run-btn');
+    btn.disabled = true;
+    resultsBox.innerHTML = '<p class="text-gray-400 text-xs">Generating ' + ids.length +
+        ' image(s) — one at a time on a single GPU, this can take a while…</p>';
+
+    var fd = new FormData();
+    fd.append('prompt', prompt);
+    fd.append('negative_prompt', document.getElementById('cmp-neg').value.trim());
+    fd.append('width', document.getElementById('cmp-width').value || '512');
+    fd.append('height', document.getElementById('cmp-height').value || '512');
+    fd.append('steps', document.getElementById('cmp-steps').value || '30');
+    fd.append('guidance', document.getElementById('cmp-guidance').value || '7.5');
+    ids.forEach(function(id) { fd.append('model_ids', id); });
+
+    fetch("{% url 'compare_models' %}", {
+        method: 'POST', headers: {'X-CSRFToken': getCookie('csrftoken')}, body: fd
+    }).then(function(r){return r.json();}).then(function(d){
+        btn.disabled = false;
+        if (!d.success) { resultsBox.innerHTML = '<p class="text-red-500 text-xs">' + escHtml(d.error || 'Failed') + '</p>'; return; }
+        resultsBox.innerHTML = d.results.map(function(r) {
+            if (r.error) {
+                return '<div class="border border-red-200 dark:border-red-800 rounded-lg p-3">' +
+                    '<div class="text-xs font-mono text-gray-500 mb-1 truncate" title="' + escHtml(r.model) + '">' + escHtml(r.model) + '</div>' +
+                    '<div class="text-xs text-red-500">' + escHtml(r.error) + '</div></div>';
+            }
+            return '<div class="border border-gray-200 dark:border-gray-700 rounded-lg p-2">' +
+                '<img src="' + escHtml(r.image_url) + '" class="w-full rounded" style="max-height:220px;object-fit:cover;">' +
+                '<div class="text-xs font-mono text-gray-500 mt-1 truncate" title="' + escHtml(r.model) + '">' + escHtml(r.model) + '</div>' +
+                '<div class="text-[11px] text-gray-400">' + r.elapsed_sec + 's · seed ' + r.seed_used + '</div></div>';
+        }).join('');
+    }).catch(function(e){ btn.disabled = false; resultsBox.innerHTML = '<p class="text-red-500 text-xs">' + escHtml(String(e)) + '</p>'; });
+}
+
+var cmpRunBtn = document.getElementById('cmp-run-btn');
+if (cmpRunBtn) cmpRunBtn.addEventListener('click', runCompareModels);
 </script>
 {% endblock %}

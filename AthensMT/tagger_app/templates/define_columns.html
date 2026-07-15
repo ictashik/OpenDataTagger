@@ -267,11 +267,22 @@
 
 <script type="application/json" id="columns-data">{{ columns_json|default:"[]"|safe }}</script>
 {{ image_models|json_script:"image-models-data" }}
-<script>var PROJECT_MODE = "{{ mode|default:'text' }}";</script>
+{{ image_loras|json_script:"image-loras-data" }}
+{{ style_presets|json_script:"style-presets-data" }}
+{{ schedulers|json_script:"schedulers-data" }}
+{{ aspect_presets|json_script:"aspect-presets-data" }}
+<script>
+    var PROJECT_MODE = "{{ mode|default:'text' }}";
+    var ROW_COUNT = {{ row_count|default:0 }};
+</script>
 
 <script>
-var ALL_COLUMNS  = JSON.parse(document.getElementById('columns-data').textContent || '[]');
-var IMAGE_MODELS = JSON.parse((document.getElementById('image-models-data') || {}).textContent || '[]') || [];
+var ALL_COLUMNS    = JSON.parse(document.getElementById('columns-data').textContent || '[]');
+var IMAGE_MODELS   = JSON.parse((document.getElementById('image-models-data') || {}).textContent || '[]') || [];
+var IMAGE_LORAS    = JSON.parse((document.getElementById('image-loras-data') || {}).textContent || '[]') || [];
+var STYLE_PRESETS  = JSON.parse((document.getElementById('style-presets-data') || {}).textContent || '[]') || [];
+var SCHEDULERS     = JSON.parse((document.getElementById('schedulers-data') || {}).textContent || '[]') || [];
+var ASPECT_PRESETS = JSON.parse((document.getElementById('aspect-presets-data') || {}).textContent || '[]') || [];
 
 /* ═══ Helpers ═══════════════════════════════════════════════════ */
 function escHtml(s) {
@@ -464,6 +475,69 @@ function imageModelOptions(selectedId) {
     }).join('');
 }
 
+function imageLoraOptions(selectedId) {
+    var opts = '<option value="">None</option>';
+    opts += IMAGE_LORAS.map(function(l) {
+        var sel = (l.id === selectedId) ? ' selected' : '';
+        return '<option value="' + escAttr(l.id) + '"' + sel + '>' + escHtml(l.label || l.id) + '</option>';
+    }).join('');
+    return opts;
+}
+
+function schedulerOptions(selectedKey) {
+    var list = SCHEDULERS.length ? SCHEDULERS : [{key: 'default', label: 'Default (as shipped)'}];
+    return list.map(function(s) {
+        var sel = (s.key === (selectedKey || 'default')) ? ' selected' : '';
+        return '<option value="' + escAttr(s.key) + '"' + sel + '>' + escHtml(s.label) + '</option>';
+    }).join('');
+}
+
+/* One row in a tag's stacked-LoRA list: a model dropdown + strength + remove. */
+function loraRowHtml(selectedId, scale) {
+    return '<div class="lora-row flex items-center gap-2">'
+        + '<select class="img-lora-id flex-1 px-2 py-1.5 rounded border border-gray-300 dark:border-gray-600 text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100">' + imageLoraOptions(selectedId) + '</select>'
+        + '<input type="number" class="img-lora-scale w-20 px-2 py-1 rounded border border-gray-300 dark:border-gray-600 text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100" step="0.05" title="Strength" value="' + (scale === undefined || scale === null ? 1.0 : scale) + '">'
+        + '<button type="button" class="lora-remove-btn text-xs text-red-400 hover:text-red-600 px-1" title="Remove">&times;</button>'
+        + '</div>';
+}
+
+/* Accepts either the new stacked `loras` list or the older singular
+   `lora`/`lora_scale` fields so previously-saved tags keep working. */
+function normalizeSavedLoras(saved) {
+    if (Array.isArray(saved.loras) && saved.loras.length) {
+        return saved.loras.filter(function(l) { return l && l.id; }).map(function(l) {
+            return {id: l.id, scale: (l.scale === undefined || l.scale === null || l.scale === '') ? 1.0 : l.scale};
+        });
+    }
+    if (saved.lora) {
+        return [{id: saved.lora, scale: (saved.lora_scale === undefined || saved.lora_scale === null || saved.lora_scale === '') ? 1.0 : saved.lora_scale}];
+    }
+    return [];
+}
+
+function aspectPresetButtonsHtml() {
+    if (!ASPECT_PRESETS.length) return '';
+    var h = '<div class="flex flex-wrap gap-1.5 mb-1.5">';
+    ASPECT_PRESETS.forEach(function(p) {
+        h += '<button type="button" class="aspect-btn text-[11px] px-2 py-1 rounded border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700" data-w="' + p.width + '" data-h="' + p.height + '">' + escHtml(p.label) + '</button>';
+    });
+    h += '</div>';
+    return h;
+}
+
+function stylePresetOptions(selectedName) {
+    if (!STYLE_PRESETS.length) return '<option value="">None</option>';
+    return STYLE_PRESETS.map(function(p) {
+        var sel = (p.name === selectedName) ? ' selected' : '';
+        return '<option value="' + escAttr(p.name) + '"' + sel + '>' + escHtml(p.name) + '</option>';
+    }).join('');
+}
+
+function presetByName(name) {
+    for (var i = 0; i < STYLE_PRESETS.length; i++) { if (STYLE_PRESETS[i].name === name) return STYLE_PRESETS[i]; }
+    return null;
+}
+
 function numField(label, cls, def, step) {
     return '<div>'
         + '<label class="block text-[11px] text-gray-500 dark:text-gray-400 mb-0.5">' + label + '</label>'
@@ -492,8 +566,18 @@ function updateImageParams(card) {
     var sec = card.querySelector('.img-section');
     if (!sec) return;
     var get = function(sel) { var el = sec.querySelector(sel); return el ? el.value : ''; };
+    var loras = [];
+    sec.querySelectorAll('.img-lora-list .lora-row').forEach(function(row) {
+        var idSel    = row.querySelector('.img-lora-id');
+        var scaleInp = row.querySelector('.img-lora-scale');
+        var id = idSel ? idSel.value : '';
+        if (id) loras.push({id: id, scale: parseFloat(scaleInp ? scaleInp.value : '1') || 1.0});
+    });
     sec.querySelector('.image-params-hidden').value = JSON.stringify({
         model:           get('.img-model'),
+        loras:           loras,
+        scheduler:       get('.img-scheduler') || 'default',
+        style_preset:    get('.img-style-preset'),
         negative_prompt: get('.img-neg-ta'),
         width:           get('.img-width')    || '512',
         height:          get('.img-height')   || '512',
@@ -502,6 +586,66 @@ function updateImageParams(card) {
         seed:            get('.img-seed')     || '-1',
         num_images:      get('.img-num')      || '1'
     });
+}
+
+function applyStylePreset(sec) {
+    var sel = sec.querySelector('.img-style-preset');
+    var p = sel ? presetByName(sel.value) : null;
+    if (!p) return;
+    if (p.negative_prompt) sec.querySelector('.img-neg-ta').value = p.negative_prompt;
+    if (p.steps)    sec.querySelector('.img-steps').value    = p.steps;
+    if (p.guidance !== undefined && p.guidance !== null) sec.querySelector('.img-guidance').value = p.guidance;
+}
+
+function runEstimate(card) {
+    var sec = card.querySelector('.img-section');
+    var resultEl = sec.querySelector('.estimate-result');
+    var promptTa = card.querySelector('.prompt-ta');
+    var promptTemplate = promptTa ? promptTa.value.trim() : '';
+    if (!promptTemplate) {
+        resultEl.innerHTML = '<span class="text-red-500">Write a prompt template first.</span>';
+        return;
+    }
+    updateImageParams(card);
+    var imageParams = sec.querySelector('.image-params-hidden').value;
+    var tagInputCols = card.querySelector('.tag-cols-hidden');
+    var globalCols = Array.from(document.querySelectorAll('.chip-cb:checked')).map(function(cb) { return cb.value; });
+
+    resultEl.innerHTML = '<span class="text-gray-400">Generating one real sample image to measure timing…</span>';
+    var fd = new FormData();
+    fd.append('prompt_template', promptTemplate);
+    fd.append('image_params', imageParams);
+    fd.append('tag_input_cols', tagInputCols ? tagInputCols.value : '');
+    fd.append('global_input_columns', globalCols.join(','));
+
+    fetch("{% url 'estimate_image' %}", {
+        method: 'POST',
+        headers: {'X-CSRFToken': getCsrfCookie()},
+        body: fd,
+    }).then(function(r) { return r.json(); }).then(function(d) {
+        if (!d.success) { resultEl.innerHTML = '<span class="text-red-500">' + escHtml(d.error || 'Failed') + '</span>'; return; }
+        resultEl.innerHTML =
+            '<div class="flex items-start gap-3">' +
+            '<img src="' + escHtml(d.image_url) + '" style="width:96px;height:96px;object-fit:cover;border-radius:6px;border:1px solid #d1d5db;">' +
+            '<div class="text-xs text-gray-600 dark:text-gray-300 space-y-0.5">' +
+            '<div><b>' + d.elapsed_sec + 's</b> for this sample image</div>' +
+            '<div>' + d.row_count + ' row' + (d.row_count === 1 ? '' : 's') + ' × ' + d.num_images + ' image' + (d.num_images === 1 ? '' : 's') + '/row</div>' +
+            '<div class="font-semibold text-gray-800 dark:text-gray-100">~' + formatEstSeconds(d.total_estimate_sec) + ' total for this tag</div>' +
+            '</div></div>';
+    }).catch(function(e) {
+        resultEl.innerHTML = '<span class="text-red-500">' + escHtml(String(e)) + '</span>';
+    });
+}
+
+function formatEstSeconds(s) {
+    if (s < 60) return Math.round(s) + 's';
+    if (s < 3600) return Math.round(s / 60) + ' min';
+    return (s / 3600).toFixed(1) + ' hr';
+}
+
+function getCsrfCookie() {
+    var v = document.cookie.match('(^|;)\\s*csrftoken\\s*=\\s*([^;]+)');
+    return v ? v.pop() : '';
 }
 
 function enhanceCardForImage(card) {
@@ -514,10 +658,31 @@ function enhanceCardForImage(card) {
     var sec = document.createElement('div');
     sec.className = 'img-section px-4 py-3 bg-white dark:bg-gray-800 border-t border-gray-200 dark:border-gray-700 space-y-3';
     var h = '';
+    h += '<div class="grid grid-cols-2 gap-2">';
     h += '<div><label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Model</label>';
     h += '<select class="img-model w-full px-2 py-1.5 rounded border border-gray-300 dark:border-gray-600 text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100">' + imageModelOptions(saved.model) + '</select></div>';
+    h += '<div><label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Scheduler <span class="font-normal text-gray-400">(sampler)</span></label>';
+    h += '<select class="img-scheduler w-full px-2 py-1.5 rounded border border-gray-300 dark:border-gray-600 text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100">' + schedulerOptions(saved.scheduler) + '</select></div>';
+    h += '</div>';
+    h += '<div><label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Prompt preset <span class="font-normal text-gray-400">(fills negative prompt)</span></label>';
+    h += '<select class="img-style-preset w-full px-2 py-1.5 rounded border border-gray-300 dark:border-gray-600 text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100">' + stylePresetOptions(saved.style_preset) + '</select></div>';
+    h += '<div>';
+    h += '<div class="flex items-center justify-between mb-1">';
+    h += '<label class="block text-xs font-medium text-gray-500 dark:text-gray-400">Style add-ons <span class="font-normal text-gray-400">(LoRA, optional — stack multiple)</span></label>';
+    h += '<button type="button" class="lora-add-btn text-xs text-indigo-500 hover:text-indigo-700 font-medium">+ Add</button>';
+    h += '</div>';
+    h += '<div class="img-lora-list space-y-1.5"></div>';
+    if (!IMAGE_LORAS.length) {
+        h += '<p class="text-[11px] text-gray-400 mt-1">No style add-ons downloaded yet — get some in <b>Image Backend</b> to push the look toward a specific style or character.</p>';
+    } else {
+        h += '<p class="text-[11px] text-gray-400 mt-1">Each add-on nudges the look toward its trained style/character. 0 = off, 1 = full effect. Stack a few for combined effects.</p>';
+    }
+    h += '</div>';
     h += '<div><label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Negative Prompt <span class="font-normal text-gray-400">— type # to insert a column</span></label>';
     h += '<textarea class="prompt-ta img-neg-ta w-full px-3 py-2 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 text-sm resize-y font-mono" rows="2" placeholder="e.g. blurry, low quality, watermark"></textarea></div>';
+    h += '<div>';
+    h += '<label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Image size</label>';
+    h += aspectPresetButtonsHtml();
     h += '<div class="grid grid-cols-3 gap-2">';
     h += numField('Width', 'img-width', 512);
     h += numField('Height', 'img-height', 512);
@@ -526,7 +691,12 @@ function enhanceCardForImage(card) {
     h += numField('Seed (-1=rand)', 'img-seed', -1);
     h += numField('Images', 'img-num', 1);
     h += '</div>';
+    h += '</div>';
     h += '<input type="hidden" name="image_params" class="image-params-hidden" value="">';
+    h += '<div class="flex items-center justify-between border-t border-gray-100 dark:border-gray-700 pt-3">';
+    h += '<button type="button" class="estimate-btn text-xs px-3 py-1.5 rounded-md bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200 font-medium">Preview &amp; Estimate</button>';
+    h += '</div>';
+    h += '<div class="estimate-result text-xs"></div>';
     sec.innerHTML = h;
     card.appendChild(sec);
 
@@ -541,7 +711,17 @@ function enhanceCardForImage(card) {
     setv('.img-guidance', saved.guidance, 7.5);
     setv('.img-seed', saved.seed, -1);
     setv('.img-num', saved.num_images, 1);
+
+    var loraList = sec.querySelector('.img-lora-list');
+    normalizeSavedLoras(saved).forEach(function(l) {
+        var wrap = document.createElement('div');
+        wrap.innerHTML = loraRowHtml(l.id, l.scale);
+        loraList.appendChild(wrap.firstElementChild);
+    });
+
     if (!saved.model) applyModelDefaults(sec);
+
+    sec.querySelector('.estimate-btn').addEventListener('click', function() { runEstimate(card); });
 
     // Send-context is meaningless for image generation — hide it.
     var sc = card.querySelector('.send-ctx-cb');
@@ -605,6 +785,25 @@ document.getElementById('tag-container').addEventListener('change', function(e) 
         return;
     }
 
+    // Style preset changed — fill negative prompt / steps / guidance (still editable after).
+    if (e.target.classList.contains('img-style-preset')) {
+        applyStylePreset(card.querySelector('.img-section'));
+        updateImageParams(card);
+        return;
+    }
+
+    // A LoRA stack row (which add-on or its strength) changed
+    if (e.target.classList.contains('img-lora-id') || e.target.classList.contains('img-lora-scale')) {
+        updateImageParams(card);
+        return;
+    }
+
+    // Scheduler changed
+    if (e.target.classList.contains('img-scheduler')) {
+        updateImageParams(card);
+        return;
+    }
+
     // Per-tag chip toggled
     if (e.target.classList.contains('tag-chip-cb')) {
         applyTagChipStyle(e.target);
@@ -661,6 +860,34 @@ document.getElementById('tag-container').addEventListener('click', function(e) {
     if (e.target.closest('.tag-none-btn')) {
         card.querySelectorAll('.tag-chip-cb').forEach(function(cb) { cb.checked = false; applyTagChipStyle(cb); });
         updateTagColsHidden(card);
+        return;
+    }
+
+    // Add another LoRA row to the stack
+    if (e.target.closest('.lora-add-btn')) {
+        var list = card.querySelector('.img-lora-list');
+        if (list) {
+            var wrap = document.createElement('div');
+            wrap.innerHTML = loraRowHtml('', 1.0);
+            list.appendChild(wrap.firstElementChild);
+            updateImageParams(card);
+        }
+        return;
+    }
+    // Remove one LoRA row from the stack
+    if (e.target.closest('.lora-remove-btn')) {
+        var row = e.target.closest('.lora-row');
+        if (row) { row.remove(); updateImageParams(card); }
+        return;
+    }
+    // Aspect-ratio preset — fills width/height in one click
+    if (e.target.closest('.aspect-btn')) {
+        var btn = e.target.closest('.aspect-btn');
+        var w = card.querySelector('.img-width');
+        var h = card.querySelector('.img-height');
+        if (w) w.value = btn.dataset.w;
+        if (h) h.value = btn.dataset.h;
+        updateImageParams(card);
         return;
     }
 });

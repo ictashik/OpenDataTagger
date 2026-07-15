@@ -40,7 +40,31 @@ from .utils import (
     get_downloaded_image_models,
     start_image_download,
     image_download_status,
+    get_image_loras,
+    get_downloaded_image_loras,
+    start_image_lora_download,
+    get_image_schedulers,
+    get_aspect_ratio_presets,
+    load_style_presets,
+    render_tag_prompt,
+    estimate_image_generation,
+    regenerate_image_cell,
+    list_image_candidates,
+    select_image_candidate,
+    load_review_state,
+    set_review_state,
+    BULK_RETRY_STATUS,
+    bulk_retry_errors,
+    compare_models_generate,
 )
+
+
+def _images_dir_for_tagged_path(tagged_path):
+    """Derive the sibling `<name>_images/` folder from a `<name>_tagged.csv`
+    path — mirrors the naming scheme row_by_row_tagger sets up in utils.py."""
+    base = tagged_path[:-len('_tagged.csv')] if tagged_path.endswith('_tagged.csv') else os.path.splitext(tagged_path)[0]
+    images_dir = base + '_images'
+    return images_dir, os.path.basename(images_dir)
 
 
 def _project_mode(request):
@@ -252,16 +276,79 @@ def define_columns_view(request):
         return redirect('tagging')
 
     context = {
-        'columns':      all_columns,
-        'columns_json': json.dumps(all_columns),
-        'config_data':  config_data,
-        'mode':         mode,
-        'image_models': [],
+        'columns':       all_columns,
+        'columns_json':  json.dumps(all_columns),
+        'config_data':   config_data,
+        'mode':          mode,
+        'image_models':  [],
+        'image_loras':   [],
+        'style_presets': [],
+        'schedulers':    [],
+        'aspect_presets': [],
+        'row_count':     len(df),
     }
     if mode == 'image':
-        context['image_models'] = get_downloaded_image_models()
+        context['image_models']   = get_downloaded_image_models()
+        context['image_loras']    = get_downloaded_image_loras()
+        context['style_presets']  = load_style_presets()
+        context['schedulers']     = get_image_schedulers()
+        context['aspect_presets'] = get_aspect_ratio_presets()
         context['active_image_connection'] = get_active_image_connection()
     return render(request, 'define_columns.html', context)
+
+
+def estimate_image_view(request):
+    """'Preview & Estimate' — run ONE real generation with the tag's current
+    (possibly unsaved) settings against row 0 of the CSV, then extrapolate a
+    total-time estimate from that real per-image cost."""
+    if request.method != 'POST':
+        return JsonResponse({'success': False, 'error': 'POST required.'}, status=400)
+
+    csv_path = request.session.get('csv_filepath')
+    if not csv_path or not os.path.exists(csv_path):
+        return JsonResponse({'success': False, 'error': 'No CSV loaded.'}, status=400)
+
+    prompt_template = request.POST.get('prompt_template', '').strip()
+    if not prompt_template:
+        return JsonResponse({'success': False, 'error': 'Prompt template is required.'}, status=400)
+
+    tag_input_cols = request.POST.get('tag_input_cols', '').strip()
+    global_cols     = [c.strip() for c in request.POST.get('global_input_columns', '').split(',') if c.strip()]
+
+    try:
+        image_params = json.loads(request.POST.get('image_params') or '{}')
+        if not isinstance(image_params, dict):
+            image_params = {}
+    except (ValueError, TypeError):
+        image_params = {}
+
+    df = read_csv_safe(csv_path)
+    if df.empty:
+        return JsonResponse({'success': False, 'error': 'CSV has no rows.'}, status=400)
+
+    row0 = df.iloc[0]
+    context_cols = [c for c in global_cols if c in df.columns] if global_cols else list(df.columns)
+    full_context = {c: row0[c] for c in context_cols}
+    all_context  = {c: row0[c] for c in df.columns}
+    definition   = {'PromptTemplate': prompt_template, 'InputColumns': tag_input_cols}
+    rendered_prompt, _ = render_tag_prompt(definition, full_context, all_context)
+
+    elapsed_sec, image_url, error = estimate_image_generation(rendered_prompt, image_params)
+    if error:
+        return JsonResponse({'success': False, 'error': error})
+
+    num_images = max(1, int(image_params.get('num_images') or 1))
+    row_count  = len(df)
+
+    return JsonResponse({
+        'success':            True,
+        'elapsed_sec':        round(elapsed_sec, 2),
+        'image_url':          image_url,
+        'row_count':          row_count,
+        'num_images':         num_images,
+        'total_estimate_sec': round(elapsed_sec * row_count * num_images, 1),
+        'rendered_prompt':    rendered_prompt,
+    })
 
 
 # ─── Tagging ─────────────────────────────────────────────────────────────────
@@ -369,36 +456,210 @@ def results_view(request):
 
     df            = pd.read_csv(tagged_file)
     table_columns = df.columns.tolist()
+    mode          = _project_mode(request)
+    images_dir, images_rel = _images_dir_for_tagged_path(tagged_file) if mode == 'image' else (None, None)
+    review_state  = load_review_state(tagged_file) if mode == 'image' else {}
+    review_filter = (request.GET.get('filter', 'all') or 'all') if mode == 'image' else 'all'
 
     # Build cells tagged with whether they point at a generated image, so the
-    # template can render a thumbnail instead of a raw path.
+    # template can render a thumbnail (+ grid picker / regenerate) instead of
+    # a raw path.
     image_exts = ('.png', '.jpg', '.jpeg', '.webp')
-    table_rows = []
-    for row in df.head(10).values.tolist():
+
+    def build_row(row_index, row):
         cells = []
-        for cell in row:
+        row_matches = (review_filter == 'all')
+        for col in table_columns:
+            cell = row[col]
             if isinstance(cell, float) and pd.isna(cell):
-                cells.append({'value': '', 'is_image': False, 'url': ''})
+                cells.append({'value': '', 'is_image': False, 'url': '', 'candidates_json': '[]',
+                              'column': col, 'row_index': int(row_index), 'review': ''})
                 continue
             sval   = str(cell)
             is_img = sval.lower().endswith(image_exts)
+            is_err = sval.startswith('ERROR:')
+            review = review_state.get(f"{row_index}:{col}", '') if (mode == 'image' and is_img) else ''
+            candidates = list_image_candidates(images_dir, images_rel, row_index, col) if (mode == 'image' and (is_img or is_err)) else []
+            if mode == 'image' and review_filter != 'all' and (is_img or is_err):
+                if review_filter == 'error' and is_err:
+                    row_matches = True
+                elif review_filter == 'unreviewed' and is_img and not review:
+                    row_matches = True
+                elif review_filter in ('approved', 'rejected') and review == review_filter:
+                    row_matches = True
             cells.append({
-                'value':    sval,
-                'is_image': is_img,
-                'url':      (settings.MEDIA_URL + sval) if is_img else '',
+                'value':          sval,
+                'is_image':       is_img,
+                'is_image_error': is_err and mode == 'image',
+                'url':            (settings.MEDIA_URL + sval) if is_img else '',
+                'candidates_json': json.dumps(candidates),
+                'column':         col,
+                'row_index':      int(row_index),
+                'review':         review,
             })
-        table_rows.append(cells)
+        return cells, row_matches
+
+    table_rows = []
+    if mode == 'image':
+        MAX_ROWS = 50
+        for row_index, row in df.iterrows():
+            cells, matches = build_row(row_index, row)
+            if matches:
+                table_rows.append(cells)
+            if len(table_rows) >= MAX_ROWS:
+                break
+        err_mask = df[table_columns].astype(str).apply(lambda col: col.str.startswith('ERROR:'))
+        error_cell_count = int(err_mask.values.sum())
+    else:
+        for row_index, row in df.head(10).iterrows():
+            cells, _ = build_row(row_index, row)
+            table_rows.append(cells)
+        error_cell_count = 0
 
     tagged_file_url = settings.MEDIA_URL + os.path.basename(tagged_file)
     logs_file_url   = (settings.MEDIA_URL + os.path.basename(logs_file)) if logs_file and os.path.exists(logs_file) else None
 
     return render(request, 'results.html', {
-        "tagged_file_url": tagged_file_url,
-        "logs_file_url":   logs_file_url,
-        "table_columns":   table_columns,
-        "table_rows":      table_rows,
-        "mode":            _project_mode(request),
+        "tagged_file_url":   tagged_file_url,
+        "logs_file_url":     logs_file_url,
+        "table_columns":     table_columns,
+        "table_rows":        table_rows,
+        "mode":              mode,
+        "review_filter":     review_filter,
+        "error_cell_count":  error_cell_count,
+        "total_rows":        len(df),
+        "shown_rows":        len(table_rows),
     })
+
+
+def set_review_view(request):
+    """Lightweight approve/reject — one click, no CSV write, sidecar JSON only."""
+    if request.method != 'POST':
+        return JsonResponse({'success': False, 'error': 'POST required.'}, status=400)
+
+    session_key = request.session.get('tagging_session_key')
+    tagged_file = cache.get(f"tagged_file_{session_key}") if session_key else None
+    if not tagged_file or not os.path.exists(tagged_file):
+        return JsonResponse({'success': False, 'error': 'No tagged file for this session.'}, status=400)
+
+    try:
+        row_index = int(request.POST.get('row_index'))
+    except (TypeError, ValueError):
+        return JsonResponse({'success': False, 'error': 'row_index is required.'}, status=400)
+    column = request.POST.get('column', '').strip()
+    status = request.POST.get('status', '').strip()
+    if not column:
+        return JsonResponse({'success': False, 'error': 'column is required.'}, status=400)
+    if status not in ('approved', 'rejected', ''):
+        return JsonResponse({'success': False, 'error': 'status must be approved, rejected, or empty.'}, status=400)
+
+    set_review_state(tagged_file, row_index, column, status)
+    return JsonResponse({'success': True, 'status': status})
+
+
+def bulk_retry_view(request):
+    """Kick off a background job retrying every image cell holding an
+    'ERROR: ...' value. Mirrors tagging_view's session_key + thread pattern."""
+    if request.method != 'POST':
+        return JsonResponse({'success': False, 'error': 'POST required.'}, status=400)
+
+    session_key = request.session.get('tagging_session_key')
+    tagged_file = cache.get(f"tagged_file_{session_key}") if session_key else None
+    if not tagged_file or not os.path.exists(tagged_file):
+        return JsonResponse({'success': False, 'error': 'No tagged file for this session.'}, status=400)
+
+    config_path = request.session.get('config_filepath')
+    config_data = load_config_file(config_path) if config_path else []
+    images_dir, images_rel = _images_dir_for_tagged_path(tagged_file)
+    os.makedirs(images_dir, exist_ok=True)
+
+    job_key = str(uuid.uuid4())
+    request.session['bulk_retry_job_key'] = job_key
+    t = threading.Thread(
+        target=bulk_retry_errors,
+        args=(job_key, tagged_file, config_data, images_dir, images_rel),
+        kwargs={'session_key': session_key, 'project_id': request.session.get('project_id')},
+        daemon=True,
+    )
+    t.start()
+    return JsonResponse({'success': True, 'job_key': job_key})
+
+
+def bulk_retry_status_view(request):
+    job_key = request.GET.get('job_key', '').strip() or request.session.get('bulk_retry_job_key', '')
+    if not job_key or job_key not in BULK_RETRY_STATUS:
+        return JsonResponse({'success': False, 'error': 'No such job.'}, status=400)
+    return JsonResponse({'success': True, **BULK_RETRY_STATUS[job_key]})
+
+
+def regenerate_image_view(request):
+    """'Retry' — re-run generation for one row/column. Fresh random seed by
+    default; pass lock_seed=1 to reuse the seed behind the currently-shown
+    candidate instead (for iterating on the prompt/settings without losing
+    the composition)."""
+    if request.method != 'POST':
+        return JsonResponse({'success': False, 'error': 'POST required.'}, status=400)
+
+    session_key = request.session.get('tagging_session_key')
+    tagged_file = cache.get(f"tagged_file_{session_key}") if session_key else None
+    if not tagged_file or not os.path.exists(tagged_file):
+        return JsonResponse({'success': False, 'error': 'No tagged file for this session.'}, status=400)
+
+    try:
+        row_index = int(request.POST.get('row_index'))
+    except (TypeError, ValueError):
+        return JsonResponse({'success': False, 'error': 'row_index is required.'}, status=400)
+    out_col = request.POST.get('column', '').strip()
+    if not out_col:
+        return JsonResponse({'success': False, 'error': 'column is required.'}, status=400)
+    lock_seed = request.POST.get('lock_seed', '').strip() == '1'
+
+    config_path = request.session.get('config_filepath')
+    config_data = load_config_file(config_path) if config_path else []
+    images_dir, images_rel = _images_dir_for_tagged_path(tagged_file)
+    os.makedirs(images_dir, exist_ok=True)
+
+    try:
+        saved_rel, seed_used = regenerate_image_cell(
+            tagged_file, config_data, row_index, out_col, images_dir, images_rel,
+            session_key=session_key, project_id=request.session.get('project_id'),
+            lock_seed=lock_seed,
+        )
+    except Exception as e:
+        return JsonResponse({'success': False, 'error': str(e)})
+
+    return JsonResponse({
+        'success':    True,
+        'image_url':  settings.MEDIA_URL + saved_rel[0],
+        'image_urls': [settings.MEDIA_URL + p for p in saved_rel],
+        'seed_used':  seed_used,
+    })
+
+
+def select_image_view(request):
+    """Grid picker — point a cell at a different already-generated candidate."""
+    if request.method != 'POST':
+        return JsonResponse({'success': False, 'error': 'POST required.'}, status=400)
+
+    session_key = request.session.get('tagging_session_key')
+    tagged_file = cache.get(f"tagged_file_{session_key}") if session_key else None
+    if not tagged_file or not os.path.exists(tagged_file):
+        return JsonResponse({'success': False, 'error': 'No tagged file for this session.'}, status=400)
+
+    try:
+        row_index = int(request.POST.get('row_index'))
+    except (TypeError, ValueError):
+        return JsonResponse({'success': False, 'error': 'row_index is required.'}, status=400)
+    out_col  = request.POST.get('column', '').strip()
+    rel_path = request.POST.get('rel_path', '').strip()
+    if not out_col or not rel_path:
+        return JsonResponse({'success': False, 'error': 'column and rel_path are required.'}, status=400)
+
+    try:
+        select_image_candidate(tagged_file, row_index, out_col, rel_path)
+    except Exception as e:
+        return JsonResponse({'success': False, 'error': str(e)})
+    return JsonResponse({'success': True})
 
 
 # ─── Connection ──────────────────────────────────────────────────────────────
@@ -474,14 +735,28 @@ def image_models_view(request):
 
 
 def image_download_view(request):
+    """Downloads a base model by default; pass kind=lora to download a LoRA
+    instead (tracked separately server-side since both are plain HF repos)."""
     if request.method != 'POST':
         return JsonResponse({'success': False, 'error': 'POST required.'}, status=400)
     model_id = request.POST.get('model_id', '').strip()
     hf_token = request.POST.get('hf_token', '').strip() or None
+    kind     = request.POST.get('kind', 'model').strip() or 'model'
     if not model_id:
         return JsonResponse({'success': False, 'error': 'model_id is required.'}, status=400)
     try:
-        return JsonResponse({'success': True, **start_image_download(model_id, hf_token)})
+        if kind == 'lora':
+            result = start_image_lora_download(model_id, hf_token)
+        else:
+            result = start_image_download(model_id, hf_token)
+        return JsonResponse({'success': True, **result})
+    except Exception as e:
+        return JsonResponse({'success': False, 'error': str(e)})
+
+
+def image_loras_view(request):
+    try:
+        return JsonResponse({'success': True, **get_image_loras()})
     except Exception as e:
         return JsonResponse({'success': False, 'error': str(e)})
 
@@ -509,3 +784,34 @@ def image_status_view(request):
         "total_time": f"{total_time:.1f} sec",
         "status":     "Active" if request_count > 0 else "Idle",
     })
+
+
+MAX_COMPARE_MODELS = 6
+
+
+def compare_models_view(request):
+    """Same prompt/settings, one image per selected model — side-by-side."""
+    if request.method != 'POST':
+        return JsonResponse({'success': False, 'error': 'POST required.'}, status=400)
+
+    prompt = request.POST.get('prompt', '').strip()
+    if not prompt:
+        return JsonResponse({'success': False, 'error': 'Prompt is required.'}, status=400)
+
+    model_ids = [m.strip() for m in request.POST.getlist('model_ids') if m.strip()]
+    if not model_ids:
+        return JsonResponse({'success': False, 'error': 'Select at least one model.'}, status=400)
+    if len(model_ids) > MAX_COMPARE_MODELS:
+        return JsonResponse({'success': False,
+                             'error': f'Compare at most {MAX_COMPARE_MODELS} models at a time.'}, status=400)
+
+    params = {
+        'negative_prompt': request.POST.get('negative_prompt', ''),
+        'width':    request.POST.get('width', 512),
+        'height':   request.POST.get('height', 512),
+        'steps':    request.POST.get('steps', 30),
+        'guidance': request.POST.get('guidance', 7.5),
+        'seed':     request.POST.get('seed', -1),
+    }
+    results = compare_models_generate(prompt, params, model_ids)
+    return JsonResponse({'success': True, 'results': results})

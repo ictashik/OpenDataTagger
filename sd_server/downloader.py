@@ -4,6 +4,7 @@ Downloads run in daemon threads; their state lives in an in-memory dict keyed
 by job id and is polled over HTTP. Gated repos (SD 3.5, FLUX.1-dev) require a
 Hugging Face token, passed straight through to huggingface_hub.
 """
+import json
 import os
 import threading
 import uuid
@@ -24,19 +25,54 @@ os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "120")
 # reasoning as above.
 os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
 
-# Diffusers model repos commonly carry multiple redundant weight formats in
-# one repo: standalone .ckpt "pruned" checkpoints, .bin duplicates of the
-# .safetensors we actually load, and a safety_checker we don't use. For
-# stable-diffusion-v1-5 alone this is the difference between a ~5.5GB and a
-# ~36GB download. Skip them all — the diffusers `from_pretrained` calls in
-# models.py only ever need the *.safetensors component weights + configs.
-_IGNORE_PATTERNS = [
-    "*.ckpt", "*.bin", "*.pt", "*.msgpack", "*.onnx", "*.ot", "*.h5",
-    "safety_checker/*",
-]
+# diffusers' folder-based `from_pretrained` (used by models.py for base
+# models) only ever reads: the small per-component configs (*.json), tokenizer
+# text/vocab files, and each component's *.safetensors — always inside a named
+# subfolder (unet/, vae/, text_encoder[_2]/, transformer/, tokenizer[_2]/,
+# scheduler/, feature_extractor/). It never reads a *root-level* weight file —
+# that's always the separate "single combined checkpoint" format for the
+# original webui (e.g. stable-diffusion-v1-5 ships v1-5-pruned(.emaonly).
+# (ckpt|safetensors) at its root, ~12GB on its own). Allow-listing to
+# "safetensors only inside a subfolder" categorically excludes those
+# regardless of what they're named, in any repo. Combined with skipping the
+# unused safety_checker, this is the difference between a ~5GB and a ~36GB
+# download of stable-diffusion-v1-5.
+#
+# LoRA repos are the opposite: their one weight file is conventionally at the
+# repo ROOT (e.g. pytorch_lora_weights.safetensors), so this allow-list is
+# only applied for kind="model" downloads, never for LoRAs.
+_MODEL_ALLOW_PATTERNS = ["*.json", "*.txt", "*.model", "*/*.safetensors"]
+_IGNORE_PATTERNS = ["safety_checker/*"]
 
 _jobs = {}
 _jobs_lock = threading.Lock()
+
+# LoRAs are plain HF repos too (same cache, same snapshot_download call) but
+# there's no reliable way to tell "this cached repo is a LoRA" apart from "a
+# small base model" just by scanning the cache. Track LoRA repo ids we've
+# downloaded explicitly in a small registry file next to this module.
+_LORA_REGISTRY_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "lora_registry.json")
+_registry_lock = threading.Lock()
+
+
+def _load_lora_registry():
+    try:
+        with open(_LORA_REGISTRY_PATH) as f:
+            return set(json.load(f))
+    except Exception:
+        return set()
+
+
+def _add_to_lora_registry(repo_id):
+    with _registry_lock:
+        ids = _load_lora_registry()
+        ids.add(repo_id)
+        with open(_LORA_REGISTRY_PATH, "w") as f:
+            json.dump(sorted(ids), f)
+
+
+def downloaded_lora_ids():
+    return _load_lora_registry()
 
 
 def _set(job_id, **kwargs):
@@ -45,13 +81,41 @@ def _set(job_id, **kwargs):
             _jobs[job_id].update(kwargs)
 
 
-def _run(job_id, model_id, token):
+def _make_progress_tqdm(job_id):
+    """A tqdm subclass fed to snapshot_download's `tqdm_class` hook. It drives
+    the outer 'Fetching N files' bar, so each `update()` call here is one more
+    file finished — coarse (file-count, not byte-level) but real, live
+    progress instead of a static 'downloading…' message."""
+    from tqdm import tqdm as _tqdm
+
+    class JobProgressTqdm(_tqdm):
+        def update(self, n=1):
+            result = super().update(n)
+            total = self.total or 0
+            done = self.n
+            pct = int(done / total * 100) if total else None
+            _set(job_id, progress=pct, files_done=done, files_total=total,
+                message=f"Downloading files… ({done}/{total})" if total else "Downloading model files…")
+            return result
+
+    return JobProgressTqdm
+
+
+def _run(job_id, model_id, token, kind):
     from huggingface_hub import snapshot_download
-    _set(job_id, state="downloading", message="Downloading model files…")
+    _set(job_id, state="downloading", message="Downloading model files…", progress=0)
+    kwargs = {
+        "repo_id": model_id, "token": token or None,
+        "ignore_patterns": _IGNORE_PATTERNS,
+        "tqdm_class": _make_progress_tqdm(job_id),
+    }
+    if kind != "lora":
+        kwargs["allow_patterns"] = _MODEL_ALLOW_PATTERNS
     try:
-        snapshot_download(repo_id=model_id, token=token or None,
-                          ignore_patterns=_IGNORE_PATTERNS)
-        _set(job_id, state="complete", message="Download complete.")
+        snapshot_download(**kwargs)
+        if kind == "lora":
+            _add_to_lora_registry(model_id)
+        _set(job_id, state="complete", message="Download complete.", progress=100)
     except Exception as e:
         msg = str(e)
         low = msg.lower()
@@ -61,12 +125,13 @@ def _run(job_id, model_id, token):
         _set(job_id, state="error", message=msg)
 
 
-def start_download(model_id, token=None):
+def start_download(model_id, token=None, kind="model"):
     job_id = str(uuid.uuid4())
     with _jobs_lock:
-        _jobs[job_id] = {"state": "queued", "model_id": model_id,
-                         "message": "Queued.", "progress": None}
-    threading.Thread(target=_run, args=(job_id, model_id, token), daemon=True).start()
+        _jobs[job_id] = {"state": "queued", "model_id": model_id, "kind": kind,
+                         "message": "Queued.", "progress": None,
+                         "files_done": 0, "files_total": 0}
+    threading.Thread(target=_run, args=(job_id, model_id, token, kind), daemon=True).start()
     return job_id
 
 

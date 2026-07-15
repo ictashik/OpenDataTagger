@@ -1,0 +1,8 @@
+[
+  {"name": "None", "negative_prompt": "", "steps": null, "guidance": null},
+  {"name": "Photorealistic", "negative_prompt": "cartoon, illustration, painting, drawing, anime, low quality, blurry, deformed, extra limbs", "steps": 30, "guidance": 7.5},
+  {"name": "Anime / Illustration", "negative_prompt": "photo, photorealistic, realistic, 3d render, blurry, low quality, deformed", "steps": 28, "guidance": 8.0},
+  {"name": "Watercolor Painting", "negative_prompt": "photo, photorealistic, 3d render, low quality, blurry, harsh lines", "steps": 30, "guidance": 7.0},
+  {"name": "Product Photography", "negative_prompt": "cartoon, illustration, low quality, blurry, cluttered background, watermark, text, logo", "steps": 32, "guidance": 8.5},
+  {"name": "Cinematic", "negative_prompt": "flat lighting, low quality, blurry, oversaturated, cartoon, amateur", "steps": 32, "guidance": 7.5}
+]

@@ -50,6 +50,8 @@ _DEFAULT_IMAGE_CONNECTION = {
 # Image generation can take a while (large models / many steps).
 SD_TIMEOUT = 600
 
+STYLE_PRESETS_PATH = os.path.join(_base, 'style_presets.json')
+
 
 def read_csv_safe(path, **kwargs):
     """Read a user-supplied CSV trying common encodings before giving up.
@@ -233,6 +235,47 @@ def get_downloaded_image_models():
         return []
 
 
+def get_image_loras(timeout=10):
+    return _sd_request('/loras', timeout=timeout)
+
+
+def get_downloaded_image_loras():
+    """List of LoRAs already downloaded — for the per-tag LoRA dropdown."""
+    try:
+        data = get_image_loras()
+        return [l for l in data.get('loras', []) if l.get('downloaded')]
+    except Exception as e:
+        print(f"Image LoRAs unavailable: {e}")
+        return []
+
+
+def start_image_lora_download(lora_id, hf_token=None, timeout=10):
+    return _sd_request('/download', {'model_id': lora_id, 'hf_token': hf_token or None, 'kind': 'lora'},
+                       method='POST', timeout=timeout)
+
+
+def get_image_schedulers(timeout=6):
+    """Curated scheduler/sampler options exposed by the SD server — for the
+    per-tag scheduler dropdown. Falls back to just 'default' if unreachable."""
+    try:
+        data = _sd_request('/schedulers', timeout=timeout)
+        return data.get('schedulers', [])
+    except Exception as e:
+        print(f"Image schedulers unavailable: {e}")
+        return [{'key': 'default', 'label': 'Default (as shipped)'}]
+
+
+def load_style_presets():
+    """Named negative-prompt/sampling presets for the image-mode tag editor.
+    Edit style_presets.json to add more — no code change needed."""
+    try:
+        with open(STYLE_PRESETS_PATH) as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"Error loading style presets: {e}")
+        return []
+
+
 def _coerce_int(val, default):
     try:
         s = str(val).strip()
@@ -253,11 +296,48 @@ def _coerce_float(val, default):
         return default
 
 
+ASPECT_RATIO_PRESETS = [
+    {'key': 'square',         'label': 'Square 1:1',       'width': 512,  'height': 512},
+    {'key': 'portrait',       'label': 'Portrait 2:3',     'width': 512,  'height': 768},
+    {'key': 'landscape',      'label': 'Landscape 3:2',    'width': 768,  'height': 512},
+    {'key': 'portrait_tall',  'label': 'Portrait 9:16',    'width': 576,  'height': 1024},
+    {'key': 'landscape_wide', 'label': 'Landscape 16:9',   'width': 1024, 'height': 576},
+    {'key': 'wide_xl',        'label': 'Wide 16:9 (XL)',   'width': 1344, 'height': 768},
+]
+
+
+def get_aspect_ratio_presets():
+    return ASPECT_RATIO_PRESETS
+
+
+def _normalize_loras(params):
+    """Normalize a tag's LoRA config to a list of {'id','scale'} dicts.
+    Supports both the new stacked `loras` list and the older singular
+    `lora`/`lora_scale` fields (still present in configs saved before
+    multi-LoRA support was added)."""
+    loras = params.get('loras')
+    if isinstance(loras, list) and loras:
+        out = []
+        for l in loras:
+            if not isinstance(l, dict):
+                continue
+            lid = (l.get('id') or '').strip()
+            if lid:
+                out.append({'id': lid, 'scale': _coerce_float(l.get('scale'), 1.0)})
+        if out:
+            return out
+    legacy_id = (params.get('lora') or '').strip()
+    if legacy_id:
+        return [{'id': legacy_id, 'scale': _coerce_float(params.get('lora_scale'), 1.0)}]
+    return []
+
+
 def call_image_generation(prompt, params):
     """Generate image(s) via the SD server for one rendered prompt.
 
     params keys (all optional except model): model, negative_prompt, width,
-    height, steps, guidance, seed, num_images, hf_token.
+    height, steps, guidance, seed, num_images, hf_token, loras (list of
+    {id, scale}), scheduler.
 
     Returns (image_bytes_list, meta, usage_dict). usage keys mirror the LLM
     path (prompt_tokens/completion_tokens are 0 for images) so record_stat is
@@ -281,6 +361,8 @@ def call_image_generation(prompt, params):
         'seed':            _coerce_int(params.get('seed'), -1),
         'num_images':      max(1, _coerce_int(params.get('num_images'), 1)),
         'hf_token':        params.get('hf_token') or None,
+        'loras':           _normalize_loras(params),
+        'scheduler':       (params.get('scheduler') or 'default').strip() or 'default',
     }
 
     start = time.time()
@@ -312,14 +394,334 @@ def call_image_generation(prompt, params):
         return [], {'error': str(e)}, usage
 
 
+def estimate_image_generation(prompt, params):
+    """Run ONE real generation with the given params to measure actual
+    per-image time on the active hardware/model (extrapolating to a full
+    project is the caller's job — this just produces a true sample).
+
+    Returns (elapsed_sec, sample_image_url, error). elapsed_sec/url are None
+    on failure, with `error` set.
+    """
+    images, meta, usage = call_image_generation(prompt, params)
+    if not images:
+        return None, None, meta.get('error', 'unknown error')
+
+    scratch_dir = os.path.join(settings.MEDIA_ROOT, '_estimates')
+    os.makedirs(scratch_dir, exist_ok=True)
+    fname = f"estimate_{int(time.time() * 1000)}.png"
+    with open(os.path.join(scratch_dir, fname), 'wb') as fh:
+        fh.write(images[0])
+    return usage['elapsed_sec'], settings.MEDIA_URL + '_estimates/' + fname, None
+
+
+def _safe_col_name(out_col):
+    return re.sub(r'[^A-Za-z0-9_-]+', '_', str(out_col)).strip('_') or 'img'
+
+
+def _next_attempt_index(images_dir, row_index, safe_col):
+    """Each generation (initial run or retry) for a row/tag gets its own
+    'attempt' number so retries add new candidate images instead of
+    overwriting earlier ones — that's what makes the grid picker and
+    regenerate-history work."""
+    if not os.path.isdir(images_dir):
+        return 0
+    prefix = f"row{row_index}_{safe_col}_a"
+    pattern = re.compile(re.escape(prefix) + r'(\d+)_\d+\.png$')
+    attempts = [int(m.group(1)) for f in os.listdir(images_dir) if (m := pattern.match(f))]
+    return (max(attempts) + 1) if attempts else 0
+
+
+def _save_generated_images(images_dir, images_rel, row_index, safe_col, attempt, images):
+    saved_rel = []
+    for n, img_bytes in enumerate(images):
+        fname = f"row{row_index}_{safe_col}_a{attempt}_{n}.png"
+        with open(os.path.join(images_dir, fname), 'wb') as fh:
+            fh.write(img_bytes)
+        saved_rel.append(f"{images_rel}/{fname}")
+    return saved_rel
+
+
+def list_image_candidates(images_dir, images_rel, row_index, out_col):
+    """Every previously generated candidate image for one row/tag — the
+    initial generation plus any retries — for the Results-page grid picker.
+    Newest attempt first."""
+    safe_col = _safe_col_name(out_col)
+    if not os.path.isdir(images_dir):
+        return []
+    prefix = f"row{row_index}_{safe_col}_a"
+    pattern = re.compile(re.escape(prefix) + r'(\d+)_(\d+)\.png$')
+    candidates = []
+    for f in os.listdir(images_dir):
+        m = pattern.match(f)
+        if m:
+            candidates.append({
+                'rel_path': f"{images_rel}/{f}",
+                'url':      settings.MEDIA_URL + images_rel + '/' + f,
+                'attempt':  int(m.group(1)),
+                'n':        int(m.group(2)),
+            })
+    candidates.sort(key=lambda c: (-c['attempt'], c['n']))
+    return candidates
+
+
+def select_image_candidate(tagged_path, row_index, out_col, rel_path):
+    """Point a tagged-CSV image cell at a different already-generated candidate."""
+    df = pd.read_csv(tagged_path)
+    if row_index < 0 or row_index >= len(df) or out_col not in df.columns:
+        raise ValueError("Invalid row index or column.")
+    df.at[row_index, out_col] = rel_path
+    df.to_csv(tagged_path, index=False)
+
+
+# ─── Review state (approve/reject) ──────────────────────────────────────────
+# A lightweight sidecar JSON next to the tagged CSV — keeps the approve/reject
+# mark out of the CSV itself so it doesn't interfere with downstream consumers
+# of the tagged data.
+
+_review_lock = threading.Lock()
+
+
+def _review_path_for_tagged(tagged_path):
+    base = tagged_path[:-len('_tagged.csv')] if tagged_path.endswith('_tagged.csv') else os.path.splitext(tagged_path)[0]
+    return base + '_review.json'
+
+
+def load_review_state(tagged_path):
+    """{'<row_index>:<column>': 'approved'|'rejected'}"""
+    try:
+        with open(_review_path_for_tagged(tagged_path)) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def set_review_state(tagged_path, row_index, column, status):
+    """status: 'approved' | 'rejected' | '' (clears the mark)."""
+    key = f"{row_index}:{column}"
+    with _review_lock:
+        state = load_review_state(tagged_path)
+        if status:
+            state[key] = status
+        else:
+            state.pop(key, None)
+        with open(_review_path_for_tagged(tagged_path), 'w') as f:
+            json.dump(state, f)
+    return state
+
+
+# ─── Seed history (locked-seed retry) ───────────────────────────────────────
+# {'<rel_path>': seed} sidecar next to the tagged CSV. Every generated image
+# is recorded here, so a later "retry with the same seed" can look up the
+# seed behind whichever candidate is currently shown in a cell (including one
+# picked via the grid, not just the latest attempt) and reuse it — letting
+# you tweak the prompt/negative-prompt/LoRA and see the effect on the same
+# composition instead of a fresh random one.
+
+_seeds_lock = threading.Lock()
+
+
+def _seeds_path_for_tagged(tagged_path):
+    base = tagged_path[:-len('_tagged.csv')] if tagged_path.endswith('_tagged.csv') else os.path.splitext(tagged_path)[0]
+    return base + '_seeds.json'
+
+
+def load_seed_state(tagged_path):
+    try:
+        with open(_seeds_path_for_tagged(tagged_path)) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def record_seeds(tagged_path, rel_paths, seed):
+    if seed is None or not rel_paths:
+        return
+    with _seeds_lock:
+        state = load_seed_state(tagged_path)
+        for rel in rel_paths:
+            state[rel] = seed
+        with open(_seeds_path_for_tagged(tagged_path), 'w') as f:
+            json.dump(state, f)
+
+
+def get_seed_for_path(tagged_path, rel_path):
+    if not rel_path:
+        return None
+    return load_seed_state(tagged_path).get(str(rel_path))
+
+
+# ─── Bulk retry ──────────────────────────────────────────────────────────────
+# Mirrors the PROGRESS_STATUS pattern used by row_by_row_tagger: a background
+# daemon thread writes into a module-level dict keyed by job id, polled over
+# HTTP from the Results page.
+
+BULK_RETRY_STATUS = {}  # job_key -> dict(status, done, total, fixed, failed, message)
+_bulk_retry_lock = threading.Lock()
+
+
+def bulk_retry_errors(job_key, tagged_path, config_data, images_dir, images_rel,
+                      session_key=None, project_id=None):
+    """Find every image cell currently holding an 'ERROR: ...' value and
+    retry it (fresh seed, same settings), one at a time — the SD server
+    serializes generation on its end anyway so there's no benefit to
+    parallelizing here."""
+    image_cols = {d['OutputColumn'] for d in config_data if (d.get('ImageParams') or '').strip()}
+    df = pd.read_csv(tagged_path)
+    targets = [
+        (int(row_index), col)
+        for row_index, row in df.iterrows()
+        for col in image_cols
+        if col in df.columns and str(row[col]).startswith('ERROR:')
+    ]
+
+    with _bulk_retry_lock:
+        BULK_RETRY_STATUS[job_key] = {
+            'status': 'running', 'done': 0, 'total': len(targets),
+            'fixed': 0, 'failed': 0, 'message': '',
+        }
+
+    for row_index, col in targets:
+        try:
+            regenerate_image_cell(
+                tagged_path, config_data, row_index, col, images_dir, images_rel,
+                session_key=session_key, project_id=project_id,
+            )
+            with _bulk_retry_lock:
+                BULK_RETRY_STATUS[job_key]['fixed'] += 1
+        except Exception as e:
+            with _bulk_retry_lock:
+                BULK_RETRY_STATUS[job_key]['failed'] += 1
+                BULK_RETRY_STATUS[job_key]['message'] = str(e)
+        with _bulk_retry_lock:
+            BULK_RETRY_STATUS[job_key]['done'] += 1
+
+    with _bulk_retry_lock:
+        BULK_RETRY_STATUS[job_key]['status'] = 'finished'
+
+
+# ─── Compare models ──────────────────────────────────────────────────────────
+
+def compare_models_generate(prompt, params, model_ids):
+    """Generate one image per model for the same prompt/params — powers the
+    Compare Models page. Images are written to a scratch media folder (not
+    tied to any project) since this is exploratory, not part of a tagging run.
+
+    Returns a list of {model, image_url, elapsed_sec, seed_used, error}.
+    """
+    scratch_dir = os.path.join(settings.MEDIA_ROOT, '_compare')
+    os.makedirs(scratch_dir, exist_ok=True)
+
+    results = []
+    for model_id in model_ids:
+        images, meta, usage = call_image_generation(prompt, {**params, 'model': model_id})
+        if not images:
+            results.append({'model': model_id, 'image_url': None, 'elapsed_sec': None,
+                            'seed_used': None, 'error': meta.get('error', 'unknown error')})
+            continue
+        fname = f"compare_{int(time.time() * 1000)}_{_safe_col_name(model_id)}.png"
+        with open(os.path.join(scratch_dir, fname), 'wb') as fh:
+            fh.write(images[0])
+        results.append({
+            'model':      model_id,
+            'image_url':  settings.MEDIA_URL + '_compare/' + fname,
+            'elapsed_sec': round(usage['elapsed_sec'], 2),
+            'seed_used':  meta.get('seed_used'),
+            'error':      None,
+        })
+    return results
+
+
+def render_tag_prompt(definition, full_context, all_context):
+    """Render one tag's PromptTemplate given the row's context.
+
+    full_context: globally-selected columns (+ generated so far).
+    all_context: every column (+ generated so far) — per-tag InputColumns can
+    reach any of these even if not globally selected.
+
+    Shared by the main tagging loop, single-row retry, and the cost/time
+    estimator so all three render a prompt identically.
+    """
+    prompt_template = definition['PromptTemplate']
+    tag_input_str = definition.get('InputColumns', '').strip()
+    if tag_input_str:
+        tag_cols = {c.strip() for c in tag_input_str.split(',') if c.strip()}
+        display_context = {k: v for k, v in all_context.items() if k in tag_cols}
+        if not display_context:
+            display_context = full_context
+    else:
+        display_context = full_context
+
+    rendered_prompt = prompt_template
+    for col, val in display_context.items():
+        rendered_prompt = rendered_prompt.replace(f'{{{col}}}', str(val))
+    return rendered_prompt, display_context
+
+
+def regenerate_image_cell(tagged_path, config_data, row_index, out_col, images_dir, images_rel,
+                          session_key=None, project_id=None, param_overrides=None, lock_seed=False):
+    """Re-run image generation for one row/tag ('Retry') using the row's
+    current (already-tagged) values as context.
+
+    By default uses a fresh random seed. If lock_seed=True (and no explicit
+    seed override), reuses the seed recorded for whichever candidate is
+    currently shown in this cell — so you can tweak the prompt/negative
+    prompt/LoRA/etc. in Define Columns and see the effect on the same
+    composition instead of a new random one. Returns (new_relative_paths, seed_used).
+    """
+    definition = next((d for d in config_data if d['OutputColumn'] == out_col), None)
+    if not definition:
+        raise ValueError(f"No such output column: {out_col}")
+
+    df = pd.read_csv(tagged_path)
+    if row_index < 0 or row_index >= len(df):
+        raise ValueError(f"Row {row_index} out of range.")
+    row_context = {c: df.loc[row_index, c] for c in df.columns}  # already holds final generated state
+    rendered_prompt, _ = render_tag_prompt(definition, row_context, row_context)
+
+    try:
+        params = json.loads(definition.get('ImageParams') or '{}')
+        if not isinstance(params, dict):
+            params = {}
+    except (ValueError, TypeError):
+        params = {}
+    params = {**params, **(param_overrides or {})}
+    if param_overrides and 'seed' in param_overrides:
+        pass  # explicit caller override wins
+    elif lock_seed:
+        locked_seed = get_seed_for_path(tagged_path, row_context.get(out_col))
+        params['seed'] = locked_seed if locked_seed is not None else -1
+    else:
+        params['seed'] = -1  # fresh randomness on a plain retry
+
+    images, meta, usage = call_image_generation(rendered_prompt, params)
+    record_stat(
+        usage['host'], usage['port'], usage['model'],
+        session_key, project_id,
+        usage['prompt_tokens'], usage['completion_tokens'], usage['elapsed_sec'],
+    )
+    if not images:
+        raise RuntimeError(meta.get('error', 'unknown error'))
+
+    safe_col = _safe_col_name(out_col)
+    attempt  = _next_attempt_index(images_dir, row_index, safe_col)
+    saved_rel = _save_generated_images(images_dir, images_rel, row_index, safe_col, attempt, images)
+    record_seeds(tagged_path, saved_rel, meta.get('seed_used'))
+
+    df.at[row_index, out_col] = saved_rel[0]
+    df.to_csv(tagged_path, index=False)
+    return saved_rel, meta.get('seed_used')
+
+
 def _generate_image_for_tag(definition, rendered_prompt, images_dir, images_rel,
-                            row_index, out_col, session_key, project_id):
+                            row_index, out_col, session_key, project_id, tagged_path=None):
     """Run one image generation for a tag, save the PNG(s), record a stat.
 
-    Returns (cell_value, explanation, image_url): cell_value is the
-    MEDIA_ROOT-relative path of the first image written into the tagged CSV
-    (or an "ERROR: …" string on failure); image_url is that path prefixed with
-    MEDIA_URL for the live-log thumbnail ('' on failure).
+    Returns (cell_value, explanation, image_url, all_relative_paths):
+    cell_value is the MEDIA_ROOT-relative path of the first image written
+    into the tagged CSV (or an "ERROR: …" string on failure); image_url is
+    that path prefixed with MEDIA_URL for the live-log thumbnail ('' on
+    failure); all_relative_paths lists every image from this call (for
+    num_images > 1 / the grid picker).
     """
     try:
         params = json.loads(definition.get('ImageParams') or '{}')
@@ -337,22 +739,20 @@ def _generate_image_for_tag(definition, rendered_prompt, images_dir, images_rel,
 
     if not images:
         err = meta.get('error', 'unknown error')
-        return f"ERROR: {err}", f"Image generation failed: {err}", ''
+        return f"ERROR: {err}", f"Image generation failed: {err}", '', []
 
-    safe_col = re.sub(r'[^A-Za-z0-9_-]+', '_', str(out_col)).strip('_') or 'img'
-    saved_rel = []
-    for n, img_bytes in enumerate(images):
-        fname = f"row{row_index}_{safe_col}_{n}.png"
-        with open(os.path.join(images_dir, fname), 'wb') as fh:
-            fh.write(img_bytes)
-        saved_rel.append(f"{images_rel}/{fname}")
+    safe_col = _safe_col_name(out_col)
+    attempt  = _next_attempt_index(images_dir, row_index, safe_col)
+    saved_rel = _save_generated_images(images_dir, images_rel, row_index, safe_col, attempt, images)
+    if tagged_path:
+        record_seeds(tagged_path, saved_rel, meta.get('seed_used'))
 
     cell_value = saved_rel[0]
     image_url  = settings.MEDIA_URL + saved_rel[0]
     model = params.get('model') or usage.get('model', '')
     seed  = meta.get('seed_used')
     explanation = f"Generated with {model}" + (f" (seed {seed})" if seed is not None else "")
-    return cell_value, explanation, image_url
+    return cell_value, explanation, image_url, saved_rel
 
 
 # ─── Projects ────────────────────────────────────────────────────────────────
@@ -651,8 +1051,7 @@ def row_by_row_tagger(session_key, csv_path, config_path, input_columns,
             generated_detail = {}
 
             for definition in output_definitions:
-                out_col         = definition['OutputColumn']
-                prompt_template = definition['PromptTemplate']
+                out_col = definition['OutputColumn']
 
                 # full_context: globally selected cols + AI-generated cols (for conditions + default prompt)
                 full_context = {**row_context, **generated}
@@ -660,18 +1059,7 @@ def row_by_row_tagger(session_key, csv_path, config_path, input_columns,
                 all_context  = {**all_row_context, **generated}
 
                 # Per-tag column filter: draws from all_context so any CSV column is reachable
-                tag_input_str = definition.get('InputColumns', '').strip()
-                if tag_input_str:
-                    tag_cols = {c.strip() for c in tag_input_str.split(',') if c.strip()}
-                    display_context = {k: v for k, v in all_context.items() if k in tag_cols}
-                    if not display_context:
-                        display_context = full_context  # fallback if nothing matches
-                else:
-                    display_context = full_context
-
-                rendered_prompt = prompt_template
-                for col, val in display_context.items():
-                    rendered_prompt = rendered_prompt.replace(f'{{{col}}}', str(val))
+                rendered_prompt, display_context = render_tag_prompt(definition, full_context, all_context)
 
                 user_prompt = (
                     f"Row {i+1}/{total_rows}:\n"
@@ -694,12 +1082,14 @@ def row_by_row_tagger(session_key, csv_path, config_path, input_columns,
                     )
 
                 image_url = ''
+                image_urls = []
                 if evaluate_condition(definition, all_context):
                     if mode == 'image':
-                        best_answer, explanation, image_url = _generate_image_for_tag(
+                        best_answer, explanation, image_url, all_paths = _generate_image_for_tag(
                             definition, rendered_prompt, images_dir, images_rel,
-                            i, out_col, session_key, project_id,
+                            i, out_col, session_key, project_id, tagged_path=tagged_path,
                         )
+                        image_urls = [settings.MEDIA_URL + p for p in all_paths]
                     else:
                         best_answer, explanation, usage = call_llm_tagging(system_prompt, user_prompt)
                         record_stat(
@@ -734,10 +1124,13 @@ def row_by_row_tagger(session_key, csv_path, config_path, input_columns,
                 }
                 pd.DataFrame([log_entry]).to_csv(logs_path, mode='a', header=False, index=False)
 
-                # live_logs carry an extra image_url for the frontend; the CSV
-                # log above keeps its fixed 5-column schema.
+                # live_logs carry extra image_url/image_urls for the frontend
+                # (image_urls has every candidate when num_images > 1, for the
+                # grid thumbnail strip); the CSV log above keeps its fixed
+                # 5-column schema.
                 live_entry = dict(log_entry)
                 live_entry["image_url"] = image_url
+                live_entry["image_urls"] = image_urls
                 live = PROGRESS_STATUS[session_key]["live_logs"]
                 live.append(live_entry)
                 if len(live) > 100:

@@ -27,6 +27,29 @@
             {% endif %}
         </div>
 
+        {% if mode == 'image' %}
+        <!-- Review filter + bulk retry -->
+        <div class="mt-6 flex flex-wrap items-center justify-between gap-3">
+            <div class="flex items-center gap-2">
+                <label class="text-xs text-gray-400">Filter:</label>
+                <select id="review-filter" class="text-sm bg-gray-700 border border-gray-600 rounded px-2 py-1 text-gray-200">
+                    <option value="all" {% if review_filter == 'all' %}selected{% endif %}>All rows</option>
+                    <option value="unreviewed" {% if review_filter == 'unreviewed' %}selected{% endif %}>Unreviewed</option>
+                    <option value="approved" {% if review_filter == 'approved' %}selected{% endif %}>Approved</option>
+                    <option value="rejected" {% if review_filter == 'rejected' %}selected{% endif %}>Rejected</option>
+                    <option value="error" {% if review_filter == 'error' %}selected{% endif %}>Errors only</option>
+                </select>
+            </div>
+            {% if error_cell_count %}
+            <div class="flex items-center gap-3">
+                <span class="text-xs text-red-400">{{ error_cell_count }} failed cell{{ error_cell_count|pluralize }}</span>
+                <button type="button" id="bulk-retry-btn" class="text-xs px-3 py-1.5 rounded-md bg-blue-600 hover:bg-blue-700 text-white font-medium">&#8635; Retry all failed</button>
+            </div>
+            {% endif %}
+        </div>
+        <div id="bulk-retry-status" class="mt-2 text-xs text-gray-400 hidden"></div>
+        {% endif %}
+
         <!-- Preview Table -->
         <div class="mt-6">
             <h4 class="text-lg font-semibold text-blue-300">Preview</h4>
@@ -44,12 +67,22 @@
                             {% for row in table_rows %}
                             <tr class="border-b border-gray-700 hover:bg-gray-800 align-top">
                                 {% for cell in row %}
-                                <td class="px-4 py-2">
+                                <td class="px-4 py-2 img-cell" data-row="{{ cell.row_index }}" data-col="{{ cell.column }}"
+                                    data-candidates="{{ cell.candidates_json }}" data-review="{{ cell.review }}">
                                     {% if cell.is_image %}
                                         <a href="{{ cell.url }}" target="_blank">
-                                            <img src="{{ cell.url }}" alt="generated"
-                                                 class="rounded border border-gray-700" style="max-height:120px">
+                                            <img src="{{ cell.url }}" alt="generated" class="result-img rounded border border-gray-700" style="max-height:120px">
                                         </a>
+                                        <div class="flex items-center gap-2 mt-1">
+                                            <button type="button" class="retry-btn text-[11px] text-blue-400 hover:text-blue-300">&#8635; Retry</button>
+                                            <button type="button" class="retry-locked-btn text-[11px] text-blue-300 hover:text-blue-200" title="Retry with the same seed — tweak the prompt/settings first to see the effect on this composition">&#128274; Retry</button>
+                                            <button type="button" class="grid-btn text-[11px] text-purple-400 hover:text-purple-300 grid-count hidden"></button>
+                                            <button type="button" class="approve-btn text-[11px] {% if cell.review == 'approved' %}text-green-400 font-bold{% else %}text-gray-500 hover:text-green-300{% endif %}" title="Approve">&#10003;</button>
+                                            <button type="button" class="reject-btn text-[11px] {% if cell.review == 'rejected' %}text-red-400 font-bold{% else %}text-gray-500 hover:text-red-300{% endif %}" title="Reject">&#10007;</button>
+                                        </div>
+                                    {% elif cell.is_image_error %}
+                                        <span class="text-red-400 text-xs block">{{ cell.value }}</span>
+                                        <button type="button" class="retry-btn text-[11px] text-blue-400 hover:text-blue-300 mt-1">&#8635; Retry</button>
                                     {% else %}
                                         {{ cell.value }}
                                     {% endif %}
@@ -65,7 +98,219 @@
             {% endif %}
         </div>
 
+        {% if mode == 'image' %}
+        <p class="text-gray-500 text-xs mt-4">* Showing {{ shown_rows }} of {{ total_rows }} row{{ total_rows|pluralize }}{% if review_filter != 'all' %} matching filter "{{ review_filter }}"{% endif %} (max 50).</p>
+        {% else %}
         <p class="text-gray-500 text-xs mt-4">* The preview shows only the first 10 rows.</p>
+        {% endif %}
     </div>
 </div>
+
+<!-- Candidate grid modal (image mode: retry history + pick-a-variant) -->
+<div id="grid-modal" class="fixed inset-0 bg-black/70 hidden items-center justify-center z-50" style="display:none;">
+    <div class="bg-gray-800 rounded-lg p-5 max-w-2xl w-full mx-4 max-h-[80vh] overflow-y-auto">
+        <div class="flex items-center justify-between mb-3">
+            <h3 class="text-sm font-semibold text-gray-200">Choose an image</h3>
+            <button type="button" id="grid-modal-close" class="text-gray-400 hover:text-gray-200 text-lg leading-none">&times;</button>
+        </div>
+        <div id="grid-modal-body" class="grid grid-cols-3 gap-3"></div>
+    </div>
+</div>
+
+<script>
+function escHtmlR(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function getCookieR(name) {
+    var v = document.cookie.match('(^|;)\\s*' + name + '\\s*=\\s*([^;]+)');
+    return v ? v.pop() : '';
+}
+
+// Show a "N" badge on cells that have more than one generated candidate.
+document.querySelectorAll('.img-cell').forEach(function(cell) {
+    var candidates = [];
+    try { candidates = JSON.parse(cell.dataset.candidates || '[]'); } catch (e) { candidates = []; }
+    var badge = cell.querySelector('.grid-count');
+    if (badge && candidates.length > 1) {
+        badge.textContent = '▦ ' + candidates.length;
+        badge.classList.remove('hidden');
+    }
+});
+
+function refreshCellCandidates(cell, imageUrl, imageUrls) {
+    var newCandidates = (imageUrls || []).map(function(url, i) {
+        return {url: url, rel_path: url.replace(/^\/media\//, ''), attempt: 0, n: i};
+    });
+    var existing = [];
+    try { existing = JSON.parse(cell.dataset.candidates || '[]'); } catch (e) { existing = []; }
+    var merged = newCandidates.concat(existing);
+    cell.dataset.candidates = JSON.stringify(merged);
+    var badge = cell.querySelector('.grid-count');
+    if (badge) {
+        if (merged.length > 1) { badge.textContent = '▦ ' + merged.length; badge.classList.remove('hidden'); }
+    }
+    var img = cell.querySelector('.result-img');
+    var link = cell.querySelector('a');
+    if (img) img.src = imageUrl;
+    if (link) link.href = imageUrl;
+}
+
+function doRetry(cell, btn, lockSeed) {
+    var origText = btn.textContent;
+    btn.textContent = 'Generating…';
+    btn.disabled = true;
+    var fd = new FormData();
+    fd.append('row_index', cell.dataset.row);
+    fd.append('column', cell.dataset.col);
+    if (lockSeed) fd.append('lock_seed', '1');
+    fetch("{% url 'regenerate_image' %}", {
+        method: 'POST', headers: {'X-CSRFToken': getCookieR('csrftoken')}, body: fd,
+    }).then(function(r) { return r.json(); }).then(function(d) {
+        btn.textContent = origText;
+        btn.disabled = false;
+        if (!d.success) { alert('Retry failed: ' + (d.error || 'unknown error')); return; }
+        refreshCellCandidates(cell, d.image_url, d.image_urls);
+    }).catch(function(e) {
+        btn.textContent = origText;
+        btn.disabled = false;
+        alert('Retry failed: ' + e);
+    });
+}
+
+document.querySelectorAll('.img-cell').forEach(function(cell) {
+    var retryBtn       = cell.querySelector('.retry-btn');
+    var retryLockedBtn = cell.querySelector('.retry-locked-btn');
+    var gridBtn        = cell.querySelector('.grid-btn');
+
+    if (retryBtn) {
+        retryBtn.addEventListener('click', function() { doRetry(cell, retryBtn, false); });
+    }
+    if (retryLockedBtn) {
+        retryLockedBtn.addEventListener('click', function() { doRetry(cell, retryLockedBtn, true); });
+    }
+    if (gridBtn) {
+        gridBtn.addEventListener('click', function() { openGridModal(cell); });
+    }
+});
+
+var gridModal = document.getElementById('grid-modal');
+var gridModalBody = document.getElementById('grid-modal-body');
+var activeGridCell = null;
+
+function openGridModal(cell) {
+    activeGridCell = cell;
+    var candidates = [];
+    try { candidates = JSON.parse(cell.dataset.candidates || '[]'); } catch (e) { candidates = []; }
+    gridModalBody.innerHTML = candidates.map(function(c) {
+        return '<div class="cand-item cursor-pointer border-2 border-transparent hover:border-indigo-500 rounded" data-rel="' + escHtmlR(c.rel_path) + '">' +
+               '<img src="' + escHtmlR(c.url) + '" style="width:100%;height:120px;object-fit:cover;border-radius:6px;">' +
+               '<div class="text-[10px] text-gray-400 text-center mt-1">attempt ' + c.attempt + '</div></div>';
+    }).join('');
+    gridModal.style.display = 'flex';
+    gridModal.classList.remove('hidden');
+}
+
+function closeGridModal() {
+    gridModal.style.display = 'none';
+    gridModal.classList.add('hidden');
+    activeGridCell = null;
+}
+
+document.getElementById('grid-modal-close').addEventListener('click', closeGridModal);
+gridModal.addEventListener('click', function(e) { if (e.target === gridModal) closeGridModal(); });
+
+gridModalBody.addEventListener('click', function(e) {
+    var item = e.target.closest('.cand-item');
+    if (!item || !activeGridCell) return;
+    var relPath = item.dataset.rel;
+    var cell = activeGridCell;
+    var fd = new FormData();
+    fd.append('row_index', cell.dataset.row);
+    fd.append('column', cell.dataset.col);
+    fd.append('rel_path', relPath);
+    fetch("{% url 'select_image' %}", {
+        method: 'POST', headers: {'X-CSRFToken': getCookieR('csrftoken')}, body: fd,
+    }).then(function(r) { return r.json(); }).then(function(d) {
+        if (!d.success) { alert('Selection failed: ' + (d.error || 'unknown error')); return; }
+        var img = cell.querySelector('.result-img');
+        var link = cell.querySelector('a');
+        var url = '/media/' + relPath;
+        if (img) img.src = url;
+        if (link) link.href = url;
+        closeGridModal();
+    }).catch(function(e) { alert('Selection failed: ' + e); });
+});
+
+/* ═══ Approve / reject ═══════════════════════════════════════════ */
+document.querySelectorAll('.img-cell').forEach(function(cell) {
+    var approveBtn = cell.querySelector('.approve-btn');
+    var rejectBtn  = cell.querySelector('.reject-btn');
+
+    function setReview(status) {
+        var fd = new FormData();
+        fd.append('row_index', cell.dataset.row);
+        fd.append('column', cell.dataset.col);
+        fd.append('status', status);
+        fetch("{% url 'set_review' %}", {
+            method: 'POST', headers: {'X-CSRFToken': getCookieR('csrftoken')}, body: fd,
+        }).then(function(r) { return r.json(); }).then(function(d) {
+            if (!d.success) { alert('Could not save review: ' + (d.error || 'unknown error')); return; }
+            cell.dataset.review = d.status;
+            if (approveBtn) approveBtn.className = 'approve-btn text-[11px] ' +
+                (d.status === 'approved' ? 'text-green-400 font-bold' : 'text-gray-500 hover:text-green-300');
+            if (rejectBtn) rejectBtn.className = 'reject-btn text-[11px] ' +
+                (d.status === 'rejected' ? 'text-red-400 font-bold' : 'text-gray-500 hover:text-red-300');
+        }).catch(function(e) { alert('Could not save review: ' + e); });
+    }
+
+    if (approveBtn) approveBtn.addEventListener('click', function() {
+        setReview(cell.dataset.review === 'approved' ? '' : 'approved');
+    });
+    if (rejectBtn) rejectBtn.addEventListener('click', function() {
+        setReview(cell.dataset.review === 'rejected' ? '' : 'rejected');
+    });
+});
+
+/* ═══ Row filter ══════════════════════════════════════════════════ */
+var reviewFilterSel = document.getElementById('review-filter');
+if (reviewFilterSel) {
+    reviewFilterSel.addEventListener('change', function() {
+        var url = new URL(window.location.href);
+        url.searchParams.set('filter', reviewFilterSel.value);
+        window.location.href = url.toString();
+    });
+}
+
+/* ═══ Bulk retry ══════════════════════════════════════════════════ */
+var bulkRetryBtn    = document.getElementById('bulk-retry-btn');
+var bulkRetryStatus = document.getElementById('bulk-retry-status');
+
+function pollBulkRetry(jobKey) {
+    fetch("{% url 'bulk_retry_status' %}?job_key=" + encodeURIComponent(jobKey))
+        .then(function(r) { return r.json(); })
+        .then(function(d) {
+            if (!d.success) { bulkRetryStatus.textContent = 'Error: ' + (d.error || 'unknown'); return; }
+            bulkRetryStatus.textContent = 'Retrying failed cells… ' + d.done + '/' + d.total +
+                ' (fixed ' + d.fixed + ', still failing ' + d.failed + ')';
+            if (d.status === 'finished') {
+                bulkRetryStatus.textContent += ' — done. Reloading…';
+                setTimeout(function() { window.location.reload(); }, 800);
+            } else {
+                setTimeout(function() { pollBulkRetry(jobKey); }, 1500);
+            }
+        }).catch(function(e) { bulkRetryStatus.textContent = 'Error polling status: ' + e; });
+}
+
+if (bulkRetryBtn) {
+    bulkRetryBtn.addEventListener('click', function() {
+        bulkRetryBtn.disabled = true;
+        bulkRetryStatus.classList.remove('hidden');
+        bulkRetryStatus.textContent = 'Starting retry job…';
+        fetch("{% url 'bulk_retry' %}", {
+            method: 'POST', headers: {'X-CSRFToken': getCookieR('csrftoken')},
+        }).then(function(r) { return r.json(); }).then(function(d) {
+            if (!d.success) { bulkRetryStatus.textContent = 'Error: ' + (d.error || 'unknown error'); bulkRetryBtn.disabled = false; return; }
+            pollBulkRetry(d.job_key);
+        }).catch(function(e) { bulkRetryStatus.textContent = 'Error: ' + e; bulkRetryBtn.disabled = false; });
+    });
+}
+</script>
 {% endblock %}

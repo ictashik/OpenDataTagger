@@ -10,6 +10,7 @@ torch
 diffusers>=0.30
 transformers
 accelerate
+peft
 huggingface_hub
 safetensors
 pillow
