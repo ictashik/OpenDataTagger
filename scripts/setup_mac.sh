@@ -44,8 +44,27 @@ stop_if_running() {
   rm -f "$pid_file"
 }
 
+# Belt-and-suspenders: kill whatever is actually bound to our ports, not just
+# whatever stop_if_running's pid file happens to point at. A pid file goes
+# stale the moment a start attempt dies on "Address already in use" (its own
+# dead pid overwrites the file) — after that, pid-file-only cleanup can never
+# reach the real, orphaned listener again, and every future run silently
+# fails to update it while it keeps serving old code.
+free_port() {
+  local port="$1" pids
+  pids="$(lsof -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null || true)"
+  [ -z "$pids" ] && return 0
+  echo "Port $port is still in use by pid(s) $pids — stopping..."
+  kill $pids 2>/dev/null || true
+  sleep 1
+  pids="$(lsof -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null || true)"
+  [ -n "$pids" ] && kill -9 $pids 2>/dev/null || true
+}
+
 stop_if_running sd_server
 stop_if_running app
+free_port 7860
+free_port 8000
 
 if ! command -v conda >/dev/null 2>&1; then
   echo "conda not found. Install Miniconda first: https://docs.conda.io/en/latest/miniconda.html" >&2
@@ -76,6 +95,20 @@ fi
 echo "Applying Django migrations..."
 python AthensMT/manage.py migrate --noinput
 
+check_started() {
+  local name="$1" port="$2" pid_file="$RUN_DIR/$1.pid" pid
+  pid="$(cat "$pid_file")"
+  if ! kill -0 "$pid" 2>/dev/null; then
+    echo "ERROR: $name (pid $pid) died immediately — check $RUN_DIR/$name.log" >&2
+    tail -n 20 "$RUN_DIR/$name.log" >&2 || true
+    exit 1
+  fi
+  if [ -z "$(lsof -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null || true)" ]; then
+    echo "ERROR: $name (pid $pid) is running but nothing is listening on :$port — check $RUN_DIR/$name.log" >&2
+    exit 1
+  fi
+}
+
 echo "Starting sd_server on :7860..."
 nohup python sd_server/app.py --port 7860 > "$RUN_DIR/sd_server.log" 2>&1 &
 echo $! > "$RUN_DIR/sd_server.pid"
@@ -87,6 +120,8 @@ nohup python AthensMT/manage.py runserver --noreload 0.0.0.0:8000 > "$RUN_DIR/ap
 echo $! > "$RUN_DIR/app.pid"
 
 sleep 2
+check_started sd_server 7860
+check_started app 8000
 echo
 echo "Done."
 echo "  App:       http://localhost:8000/ODT/   (log: .run/app.log)"

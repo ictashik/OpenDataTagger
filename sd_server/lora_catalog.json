@@ -3,6 +3,7 @@
     "id": "osmr/stable-diffusion-v1-5-lora-animegirls",
     "label": "Anime Girls (SD 1.5)",
     "gated": false,
+    "size_bytes": 13142434,
     "notes": "Small (~13MB) style LoRA for SD 1.5. Use with a SD 1.5 base model."
   }
 ]

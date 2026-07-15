@@ -7,6 +7,7 @@ Hugging Face token, passed straight through to huggingface_hub.
 import json
 import os
 import threading
+import time
 import uuid
 
 # huggingface_hub's per-chunk stall timeout defaults to 10s, which large
@@ -92,10 +93,18 @@ def _set(job_id, **kwargs):
 
 
 def _make_progress_tqdm(job_id):
-    """A tqdm subclass fed to snapshot_download's `tqdm_class` hook. It drives
-    the outer 'Fetching N files' bar, so each `update()` call here is one more
-    file finished — coarse (file-count, not byte-level) but real, live
-    progress instead of a static 'downloading…' message."""
+    """A tqdm subclass fed to snapshot_download's `tqdm_class` hook. HF reuses
+    this one class for several different progress bars concurrently:
+
+    - the outer 'Fetching N files' bar (unit="it", one update per finished file)
+    - a 'Downloading bytes' transfer bar (unit="B", total is an unreliable
+      dedup/compression estimate — HF's own comment says not to trust it)
+    - a 'Reconstructing' bar (unit="B", total = real sum of file sizes on the
+      repo, updated as bytes are written to disk)
+
+    Byte-level progress (%, GB/GB, speed, ETA) must come from the
+    'Reconstructing' bar — it's the only one with a trustworthy total. The
+    file-count bar still feeds the supplementary 'N/M files' readout."""
     from tqdm import tqdm as _tqdm
 
     class JobProgressTqdm(_tqdm):
@@ -103,12 +112,51 @@ def _make_progress_tqdm(job_id):
             result = super().update(n)
             total = self.total or 0
             done = self.n
-            pct = int(done / total * 100) if total else None
-            _set(job_id, progress=pct, files_done=done, files_total=total,
-                message=f"Downloading files… ({done}/{total})" if total else "Downloading model files…")
+            if self.unit == "B":
+                if (self.desc or "").startswith("Reconstructing"):
+                    _update_byte_progress(job_id, done, total)
+            else:
+                _set(job_id, files_done=done, files_total=total,
+                    message=f"Fetching files… ({done}/{total})" if total else "Preparing download…")
             return result
 
     return JobProgressTqdm
+
+
+def _update_byte_progress(job_id, done, total):
+    """Update byte-level progress plus a smoothed download speed and ETA.
+
+    Speed is an EMA of instantaneous rate, recomputed at most every 0.5s so
+    frequent small chunk updates (10MB DOWNLOAD_CHUNK_SIZE) don't make the
+    reading jump around.
+    """
+    now = time.monotonic()
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+        if job is None:
+            return
+        prev_ts = job.get("_speed_ts")
+        prev_bytes = job.get("_speed_bytes", 0)
+        speed = job.get("speed_bps")
+        if prev_ts is None:
+            job["_speed_ts"] = now
+            job["_speed_bytes"] = done
+        else:
+            dt = now - prev_ts
+            if dt >= 0.5:
+                inst = max(0, done - prev_bytes) / dt
+                speed = inst if speed is None else (0.3 * inst + 0.7 * speed)
+                job["_speed_ts"] = now
+                job["_speed_bytes"] = done
+        pct = int(done / total * 100) if total else None
+        eta = int((total - done) / speed) if (speed and total and done < total) else None
+        job.update({
+            "progress": pct,
+            "bytes_done": done,
+            "bytes_total": total,
+            "speed_bps": speed,
+            "eta_seconds": eta,
+        })
 
 
 def _run(job_id, model_id, token, kind):
@@ -140,14 +188,17 @@ def start_download(model_id, token=None, kind="model"):
     with _jobs_lock:
         _jobs[job_id] = {"state": "queued", "model_id": model_id, "kind": kind,
                          "message": "Queued.", "progress": None,
-                         "files_done": 0, "files_total": 0}
+                         "files_done": 0, "files_total": 0,
+                         "bytes_done": 0, "bytes_total": 0,
+                         "speed_bps": None, "eta_seconds": None}
     threading.Thread(target=_run, args=(job_id, model_id, token, kind), daemon=True).start()
     return job_id
 
 
 def status(job_id):
     with _jobs_lock:
-        return dict(_jobs.get(job_id, {"state": "unknown", "message": "No such job."}))
+        job = _jobs.get(job_id, {"state": "unknown", "message": "No such job."})
+        return {k: v for k, v in job.items() if not k.startswith("_")}
 
 
 def downloaded_repo_ids():

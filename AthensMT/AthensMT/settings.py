@@ -42,7 +42,6 @@ ALLOWED_HOSTS = [
     "127.0.0.1",
     '10.10.60.150',
     '10.60.23.101',
-    '*'
 ]
 CSRF_TRUSTED_ORIGINS = [
     "https://datatools.sjri.res.in", 

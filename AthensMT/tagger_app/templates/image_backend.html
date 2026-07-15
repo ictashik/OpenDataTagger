@@ -143,6 +143,30 @@ function showStatus(msg, ok) {
     el.className = 'text-xs ' + (ok ? 'text-green-500' : 'text-red-500');
 }
 
+function formatBytes(bytes) {
+    if (bytes === null || bytes === undefined || isNaN(bytes)) return '?';
+    if (bytes < 1024) return bytes + ' B';
+    var units = ['KB', 'MB', 'GB', 'TB'];
+    var val = bytes;
+    var i = -1;
+    do { val /= 1024; i++; } while (val >= 1024 && i < units.length - 1);
+    return val.toFixed(val >= 100 ? 0 : val >= 10 ? 1 : 2) + ' ' + units[i];
+}
+function formatSpeed(bytesPerSec) {
+    if (!bytesPerSec) return '';
+    return formatBytes(bytesPerSec) + '/s';
+}
+function formatDuration(seconds) {
+    if (seconds === null || seconds === undefined || isNaN(seconds) || seconds < 0) return '';
+    seconds = Math.round(seconds);
+    var h = Math.floor(seconds / 3600);
+    var m = Math.floor((seconds % 3600) / 60);
+    var s = seconds % 60;
+    if (h > 0) return h + 'h ' + m + 'm left';
+    if (m > 0) return m + 'm ' + s + 's left';
+    return s + 's left';
+}
+
 function saveBackend() {
     var host = document.getElementById('inp-host').value.trim();
     var port = document.getElementById('inp-port').value.trim();
@@ -209,7 +233,7 @@ function renderModels(models) {
              +    '<div>'
              +      '<div class="font-medium text-gray-800 dark:text-gray-100">' + escHtml(m.label || m.id) + ' ' + badges + '</div>'
              +      '<div class="text-xs text-gray-400 font-mono">' + escHtml(m.id) + '</div>'
-             +      (m.min_vram_mb ? '<div class="text-xs text-gray-400">~' + m.min_vram_mb + ' MB VRAM</div>' : '')
+             +      (m.min_vram_mb ? '<div class="text-xs text-gray-400">~' + m.min_vram_mb + ' MB VRAM' + (m.size_bytes && !m.downloaded ? ' · ' + formatBytes(m.size_bytes) + ' download' : '') + '</div>' : (m.size_bytes && !m.downloaded ? '<div class="text-xs text-gray-400">' + formatBytes(m.size_bytes) + ' download</div>' : ''))
              +      (m.notes ? '<div class="text-xs text-gray-400 mt-0.5">' + escHtml(m.notes) + '</div>' : '')
              +    '</div>'
              +    '<div class="dl-slot text-right" data-id="' + escHtml(m.id) + '">' + action + '</div>'
@@ -255,13 +279,19 @@ function pollDownload(jobId, modelId, kind, slotSelector) {
             } else if (d.state === 'error') {
                 slot.innerHTML = '<span class="text-xs text-red-500" title="' + escHtml(d.message||'') + '">Error</span>';
             } else {
-                // Real progress: files done/total from the tqdm hook in downloader.py.
+                // Real progress: byte-level done/total from the tqdm hook in downloader.py.
                 var pct = (d.progress !== null && d.progress !== undefined) ? d.progress : null;
                 if (pct !== null) {
+                    var sizeLine = formatBytes(d.bytes_done || 0) + ' / ' + (d.bytes_total ? formatBytes(d.bytes_total) : '?') + ' (' + pct + '%)';
+                    var metaBits = [];
+                    if (d.speed_bps) metaBits.push(formatSpeed(d.speed_bps));
+                    var etaStr = formatDuration(d.eta_seconds);
+                    if (etaStr) metaBits.push(etaStr);
                     slot.innerHTML =
-                        '<div style="width:120px;">' +
-                        '<div class="text-[10px] text-gray-400 mb-0.5">' + (d.files_done||0) + '/' + (d.files_total||'?') + ' files</div>' +
+                        '<div style="width:160px;">' +
+                        '<div class="text-[10px] text-gray-500 dark:text-gray-400 mb-0.5">' + sizeLine + '</div>' +
                         '<div class="bg-gray-200 dark:bg-gray-700 rounded-full h-1.5"><div class="bg-indigo-500 h-1.5 rounded-full" style="width:' + pct + '%"></div></div>' +
+                        (metaBits.length ? '<div class="text-[10px] text-gray-400 mt-0.5">' + escHtml(metaBits.join(' · ')) + '</div>' : '') +
                         '</div>';
                 } else {
                     slot.innerHTML = '<span class="text-xs text-gray-400">' + escHtml(d.message || d.state || 'downloading…') + '</span>';
@@ -298,6 +328,7 @@ function renderLoras(loras) {
              +    '<div>'
              +      '<div class="font-medium text-gray-800 dark:text-gray-100">' + escHtml(l.label || l.id) + ' ' + badges + '</div>'
              +      '<div class="text-xs text-gray-400 font-mono">' + escHtml(l.id) + '</div>'
+             +      (l.size_bytes && !l.downloaded ? '<div class="text-xs text-gray-400">' + formatBytes(l.size_bytes) + ' download</div>' : '')
              +      (l.notes ? '<div class="text-xs text-gray-400 mt-0.5">' + escHtml(l.notes) + '</div>' : '')
              +    '</div>'
              +    '<div class="dl-slot text-right" data-id="lora-' + escHtml(l.id) + '">' + action + '</div>'
