@@ -15,8 +15,15 @@ import json
 import os
 from typing import List, Optional
 
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
+
+_SERVER_DIR = os.path.dirname(os.path.abspath(__file__))
+# Load from this file's own directory, not cwd, so HF_TOKEN is picked up
+# whether the server is launched via `python app.py`, `cd sd_server && ...`,
+# or scripts/setup_mac.sh.
+load_dotenv(os.path.join(_SERVER_DIR, ".env"))
 
 import downloader
 import models as model_mgr
@@ -24,8 +31,8 @@ from capability import detect_capability
 
 app = FastAPI(title="ODT Stable Diffusion Server")
 
-CATALOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "catalog.json")
-LORA_CATALOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "lora_catalog.json")
+CATALOG_PATH = os.path.join(_SERVER_DIR, "catalog.json")
+LORA_CATALOG_PATH = os.path.join(_SERVER_DIR, "lora_catalog.json")
 
 
 def load_catalog():
@@ -114,7 +121,7 @@ def download(req: DownloadReq):
     if not req.model_id:
         raise HTTPException(status_code=400, detail="model_id is required")
     kind = req.kind if req.kind in ("model", "lora") else "model"
-    job_id = downloader.start_download(req.model_id, req.hf_token, kind=kind)
+    job_id = downloader.start_download(req.model_id, req.hf_token or os.environ.get("HF_TOKEN"), kind=kind)
     return {"job_id": job_id}
 
 
@@ -163,7 +170,7 @@ def generate(req: GenerateReq):
             guidance_scale=req.guidance_scale,
             seed=req.seed,
             num_images=req.num_images,
-            token=req.hf_token,
+            token=req.hf_token or os.environ.get("HF_TOKEN"),
             loras=[l.dict() for l in req.loras],
             scheduler=req.scheduler,
         )

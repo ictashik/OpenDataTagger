@@ -1,0 +1,14 @@
+# Conda env for running both the Django app and sd_server on one machine
+# (e.g. natively on an Apple Silicon Mac, for MPS access — see sd_server/README.md).
+#
+# This only pins the Python version; actual packages come from
+# AthensMT/requirements.txt and sd_server/requirements.txt (installed by
+# scripts/setup_mac.sh) so the dependency list has one source of truth.
+#
+# Usage: conda env create -f environment.yml
+name: ODT
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
