@@ -25,6 +25,16 @@ os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "120")
 # reasoning as above.
 os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
 
+# Fully import huggingface_hub (and the requests/charset_normalizer/urllib3
+# chain underneath it) right here in the main thread, before uvicorn starts
+# dispatching requests to worker threads. FastAPI runs sync endpoints
+# (download/generate) in a thread pool, so if this stays a lazy import inside
+# those functions, two requests can race on the *first* import of the same
+# module across threads — Python then returns a half-initialized module to
+# whichever thread loses, raising spurious "module X has no attribute Y"
+# errors (seen for both charset_normalizer and requests.exceptions).
+import huggingface_hub  # noqa: F401
+
 # diffusers' folder-based `from_pretrained` (used by models.py for base
 # models) only ever reads: the small per-component configs (*.json), tokenizer
 # text/vocab files, and each component's *.safetensors — always inside a named
