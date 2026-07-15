@@ -3,6 +3,7 @@ import openai
 import pandas as pd
 import os
 import re
+import shutil
 import time
 import json
 import base64
@@ -418,48 +419,121 @@ def _safe_col_name(out_col):
     return re.sub(r'[^A-Za-z0-9_-]+', '_', str(out_col)).strip('_') or 'img'
 
 
-def _next_attempt_index(images_dir, row_index, safe_col):
+def _safe_filename_value(value, fallback):
+    """Sanitize a cell value for use as (part of) a filename, falling back
+    to `fallback` (typically 'row{N}') when the value is blank/NaN or
+    sanitizes away to nothing."""
+    if value is None:
+        return fallback
+    s = str(value).strip()
+    if not s or s.lower() == 'nan':
+        return fallback
+    s = re.sub(r'[^A-Za-z0-9_-]+', '_', s).strip('_')
+    return s[:80] or fallback
+
+
+def _convert_image_bytes(png_bytes, ext):
+    """The SD server always returns PNG bytes; convert to JPEG here if the
+    project's chosen output format asks for it. JPEG has no alpha channel,
+    so transparency is flattened onto white first."""
+    if ext not in ('jpg', 'jpeg'):
+        return png_bytes
+    import io
+    from PIL import Image
+    img = Image.open(io.BytesIO(png_bytes))
+    if img.mode in ('RGBA', 'LA', 'P'):
+        img = img.convert('RGBA')
+        bg = Image.new('RGB', img.size, (255, 255, 255))
+        bg.paste(img, mask=img.split()[-1])
+        img = bg
+    else:
+        img = img.convert('RGB')
+    buf = io.BytesIO()
+    img.save(buf, format='JPEG', quality=92)
+    return buf.getvalue()
+
+
+def _image_base_name(row_data, naming_column, row_index):
+    """User-facing base filename for a row's generated image(s) — the
+    naming column's value when configured and present, else 'row{N}'."""
+    if naming_column and row_data and naming_column in row_data:
+        return _safe_filename_value(row_data.get(naming_column), f"row{row_index}")
+    return f"row{row_index}"
+
+
+# ─── Image manifest (attempt tracking + candidate lookup) ───────────────────
+# A JSON sidecar next to the tagged CSV recording every image ever generated
+# for a given (row, output column), independent of what the file is actually
+# named on disk. This lets filenames stay clean (e.g. "SKU123.jpg" instead of
+# "row0_image_a0_0.png") while still supporting retries/candidates: the
+# manifest — not filename parsing — is the source of truth for attempt
+# numbers and the Results-page grid picker.
+
+_manifest_lock = threading.Lock()
+
+
+def _manifest_path_for_tagged(tagged_path):
+    base = tagged_path[:-len('_tagged.csv')] if tagged_path.endswith('_tagged.csv') else os.path.splitext(tagged_path)[0]
+    return base + '_image_manifest.json'
+
+
+def _load_manifest(tagged_path):
+    try:
+        with open(_manifest_path_for_tagged(tagged_path)) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _next_attempt_index(tagged_path, row_index, out_col):
     """Each generation (initial run or retry) for a row/tag gets its own
     'attempt' number so retries add new candidate images instead of
     overwriting earlier ones — that's what makes the grid picker and
     regenerate-history work."""
-    if not os.path.isdir(images_dir):
-        return 0
-    prefix = f"row{row_index}_{safe_col}_a"
-    pattern = re.compile(re.escape(prefix) + r'(\d+)_\d+\.png$')
-    attempts = [int(m.group(1)) for f in os.listdir(images_dir) if (m := pattern.match(f))]
-    return (max(attempts) + 1) if attempts else 0
+    entries = _load_manifest(tagged_path).get(f"{row_index}:{out_col}", [])
+    return (max((e['attempt'] for e in entries), default=-1) + 1)
 
 
-def _save_generated_images(images_dir, images_rel, row_index, safe_col, attempt, images):
+def _save_generated_images(images_dir, images_rel, tagged_path, row_index, out_col,
+                           attempt, images, base_name, ext):
+    """Write generated image bytes to disk with a human-readable filename and
+    record each one in the manifest. `base_name` should already be sanitized
+    (see _image_base_name); a per-file existence check disambiguates the rare
+    case where two rows sanitize to the same base name, so nothing on disk is
+    ever silently overwritten."""
     saved_rel = []
-    for n, img_bytes in enumerate(images):
-        fname = f"row{row_index}_{safe_col}_a{attempt}_{n}.png"
-        with open(os.path.join(images_dir, fname), 'wb') as fh:
-            fh.write(img_bytes)
-        saved_rel.append(f"{images_rel}/{fname}")
+    with _manifest_lock:
+        manifest = _load_manifest(tagged_path)
+        key = f"{row_index}:{out_col}"
+        entries = manifest.setdefault(key, [])
+        for n, img_bytes in enumerate(images):
+            suffix = (f"_a{attempt}" if attempt > 0 else "") + (f"_{n}" if n > 0 else "")
+            fname = f"{base_name}{suffix}.{ext}"
+            path = os.path.join(images_dir, fname)
+            if os.path.exists(path):
+                fname = f"{base_name}_row{row_index}{suffix}.{ext}"
+                path = os.path.join(images_dir, fname)
+            with open(path, 'wb') as fh:
+                fh.write(_convert_image_bytes(img_bytes, ext))
+            rel = f"{images_rel}/{fname}"
+            saved_rel.append(rel)
+            entries.append({'rel_path': rel, 'attempt': attempt, 'n': n})
+        with open(_manifest_path_for_tagged(tagged_path), 'w') as f:
+            json.dump(manifest, f)
     return saved_rel
 
 
-def list_image_candidates(images_dir, images_rel, row_index, out_col):
+def list_image_candidates(tagged_path, row_index, out_col):
     """Every previously generated candidate image for one row/tag — the
     initial generation plus any retries — for the Results-page grid picker.
     Newest attempt first."""
-    safe_col = _safe_col_name(out_col)
-    if not os.path.isdir(images_dir):
-        return []
-    prefix = f"row{row_index}_{safe_col}_a"
-    pattern = re.compile(re.escape(prefix) + r'(\d+)_(\d+)\.png$')
-    candidates = []
-    for f in os.listdir(images_dir):
-        m = pattern.match(f)
-        if m:
-            candidates.append({
-                'rel_path': f"{images_rel}/{f}",
-                'url':      settings.MEDIA_URL + images_rel + '/' + f,
-                'attempt':  int(m.group(1)),
-                'n':        int(m.group(2)),
-            })
+    entries = _load_manifest(tagged_path).get(f"{row_index}:{out_col}", [])
+    candidates = [{
+        'rel_path': e['rel_path'],
+        'url':      settings.MEDIA_URL + e['rel_path'],
+        'attempt':  e['attempt'],
+        'n':        e.get('n', 0),
+    } for e in entries]
     candidates.sort(key=lambda c: (-c['attempt'], c['n']))
     return candidates
 
@@ -702,9 +776,11 @@ def regenerate_image_cell(tagged_path, config_data, row_index, out_col, images_d
     if not images:
         raise RuntimeError(meta.get('error', 'unknown error'))
 
-    safe_col = _safe_col_name(out_col)
-    attempt  = _next_attempt_index(images_dir, row_index, safe_col)
-    saved_rel = _save_generated_images(images_dir, images_rel, row_index, safe_col, attempt, images)
+    naming_column, image_format = _project_image_settings(project_id)
+    base_name = _image_base_name(row_context, naming_column, row_index)
+    attempt   = _next_attempt_index(tagged_path, row_index, out_col)
+    saved_rel = _save_generated_images(images_dir, images_rel, tagged_path, row_index, out_col,
+                                       attempt, images, base_name, image_format)
     record_seeds(tagged_path, saved_rel, meta.get('seed_used'))
 
     df.at[row_index, out_col] = saved_rel[0]
@@ -713,8 +789,9 @@ def regenerate_image_cell(tagged_path, config_data, row_index, out_col, images_d
 
 
 def _generate_image_for_tag(definition, rendered_prompt, images_dir, images_rel,
-                            row_index, out_col, session_key, project_id, tagged_path=None):
-    """Run one image generation for a tag, save the PNG(s), record a stat.
+                            row_index, out_col, session_key, project_id, tagged_path,
+                            row_data=None, naming_column='', image_format='png'):
+    """Run one image generation for a tag, save the image(s), record a stat.
 
     Returns (cell_value, explanation, image_url, all_relative_paths):
     cell_value is the MEDIA_ROOT-relative path of the first image written
@@ -741,11 +818,11 @@ def _generate_image_for_tag(definition, rendered_prompt, images_dir, images_rel,
         err = meta.get('error', 'unknown error')
         return f"ERROR: {err}", f"Image generation failed: {err}", '', []
 
-    safe_col = _safe_col_name(out_col)
-    attempt  = _next_attempt_index(images_dir, row_index, safe_col)
-    saved_rel = _save_generated_images(images_dir, images_rel, row_index, safe_col, attempt, images)
-    if tagged_path:
-        record_seeds(tagged_path, saved_rel, meta.get('seed_used'))
+    base_name = _image_base_name(row_data, naming_column, row_index)
+    attempt   = _next_attempt_index(tagged_path, row_index, out_col)
+    saved_rel = _save_generated_images(images_dir, images_rel, tagged_path, row_index, out_col,
+                                       attempt, images, base_name, image_format)
+    record_seeds(tagged_path, saved_rel, meta.get('seed_used'))
 
     cell_value = saved_rel[0]
     image_url  = settings.MEDIA_URL + saved_rel[0]
@@ -777,10 +854,23 @@ def load_projects():
             df['mode'] = df['mode'].fillna('text').replace('', 'text').astype(str)
         else:
             df['mode'] = 'text'
+        # Per-project image settings — older registries predate these columns.
+        if 'image_naming_column' in df.columns:
+            df['image_naming_column'] = df['image_naming_column'].fillna('').astype(str)
+        else:
+            df['image_naming_column'] = ''
+        if 'image_format' in df.columns:
+            df['image_format'] = df['image_format'].fillna('png').replace('', 'png').astype(str)
+        else:
+            df['image_format'] = 'png'
         return df.sort_values('last_updated', ascending=False).to_dict('records')
     except Exception as e:
         print(f"Error loading projects: {e}")
         return []
+
+
+def get_project(project_id):
+    return next((p for p in load_projects() if str(p['project_id']) == str(project_id)), None)
 
 
 def save_project(project_id, name, csv_path, config_path='', mode='text'):
@@ -802,6 +892,8 @@ def save_project(project_id, name, csv_path, config_path='', mode='text'):
                 'done_rows': 0,
                 'session_key': '',
                 'mode': mode or 'text',
+                'image_naming_column': '',
+                'image_format': 'png',
             })
         else:
             existing['last_updated'] = now
@@ -826,8 +918,33 @@ def delete_project(project_id):
     path = os.path.normpath(PROJECTS_CSV)
     with _projects_lock:
         projects = load_projects()
+        target = next((p for p in projects if str(p['project_id']) == str(project_id)), None)
         projects = [p for p in projects if str(p['project_id']) != str(project_id)]
         pd.DataFrame(projects).to_csv(path, index=False)
+
+    # Projects created after the per-project-folder change store all their
+    # files under media/<project_id>/ — safe to remove outright. Older
+    # projects still point at flat media/<name>... paths shared by naming
+    # convention only, so leave those files on disk (metadata-only delete).
+    if target and target.get('csv_path'):
+        project_dir = os.path.dirname(os.path.abspath(target['csv_path']))
+        if os.path.basename(project_dir) == str(project_id):
+            shutil.rmtree(project_dir, ignore_errors=True)
+
+
+def _project_image_settings(project_id):
+    """(naming_column, format) for a project's generated-image filenames.
+    Falls back to row-index naming / PNG when unset or the project is
+    missing (e.g. exploratory calls with no project_id)."""
+    if not project_id:
+        return '', 'png'
+    proj = get_project(project_id)
+    if not proj:
+        return '', 'png'
+    fmt = (proj.get('image_format') or 'png').lower()
+    if fmt not in ('png', 'jpg', 'jpeg'):
+        fmt = 'png'
+    return proj.get('image_naming_column', '') or '', fmt
 
 
 # ─── Stats ───────────────────────────────────────────────────────────────────
@@ -1004,10 +1121,13 @@ def row_by_row_tagger(session_key, csv_path, config_path, input_columns,
         logs_path   = base + "_logs.csv"
         tagged_path = base + "_tagged.csv"
 
-        # For image mode, generated PNGs go in a sibling folder under media/;
-        # cells store the path relative to MEDIA_ROOT so results/logs can render them.
+        # For image mode, generated images go in a sibling folder under media/;
+        # cells store the path relative to MEDIA_ROOT (not just the folder's
+        # basename) so results/logs still render correctly now that uploads
+        # live under per-project subfolders rather than flat in media/.
         images_dir = base + "_images"
-        images_rel = os.path.basename(images_dir)
+        images_rel = os.path.relpath(images_dir, settings.MEDIA_ROOT).replace(os.sep, '/')
+        naming_column, image_format = _project_image_settings(project_id)
         if mode == 'image':
             os.makedirs(images_dir, exist_ok=True)
 
@@ -1087,7 +1207,8 @@ def row_by_row_tagger(session_key, csv_path, config_path, input_columns,
                     if mode == 'image':
                         best_answer, explanation, image_url, all_paths = _generate_image_for_tag(
                             definition, rendered_prompt, images_dir, images_rel,
-                            i, out_col, session_key, project_id, tagged_path=tagged_path,
+                            i, out_col, session_key, project_id, tagged_path,
+                            row_data=all_context, naming_column=naming_column, image_format=image_format,
                         )
                         image_urls = [settings.MEDIA_URL + p for p in all_paths]
                     else:

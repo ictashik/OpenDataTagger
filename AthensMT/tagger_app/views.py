@@ -29,6 +29,7 @@ from .utils import (
     save_project,
     update_project,
     delete_project,
+    get_project,
     get_host_stats,
     read_csv_safe,
     convert_upload_to_csv,
@@ -64,7 +65,8 @@ def _images_dir_for_tagged_path(tagged_path):
     path — mirrors the naming scheme row_by_row_tagger sets up in utils.py."""
     base = tagged_path[:-len('_tagged.csv')] if tagged_path.endswith('_tagged.csv') else os.path.splitext(tagged_path)[0]
     images_dir = base + '_images'
-    return images_dir, os.path.basename(images_dir)
+    images_rel = os.path.relpath(images_dir, settings.MEDIA_ROOT).replace(os.sep, '/')
+    return images_dir, images_rel
 
 
 def _project_mode(request):
@@ -174,17 +176,20 @@ def upload_file_view(request):
             config_file = form.cleaned_data.get('config_file')
             mode        = 'image' if request.POST.get('mode') == 'image' else 'text'
 
-            fs       = FileSystemStorage(location='media/')
-            csv_path = os.path.join('media', csv_file.name)
-            if os.path.exists(csv_path):
-                os.remove(csv_path)
+            # Each project gets its own media/<project_id>/ folder so two
+            # uploads sharing a filename (e.g. two "test.csv" runs) never
+            # collide on disk or bleed stale rows/images into each other.
+            project_id  = str(uuid.uuid4())
+            project_dir = os.path.join('media', project_id)
+            os.makedirs(project_dir, exist_ok=True)
+
+            fs       = FileSystemStorage(location=project_dir)
+            csv_path = os.path.join(project_dir, csv_file.name)
             fs.save(csv_file.name, csv_file)
             csv_path = convert_upload_to_csv(csv_path)
 
             if config_file:
-                config_path = os.path.join('media', config_file.name)
-                if os.path.exists(config_path):
-                    os.remove(config_path)
+                config_path = os.path.join(project_dir, config_file.name)
                 fs.save(config_file.name, config_file)
                 config_path = convert_upload_to_csv(config_path)
             else:
@@ -193,10 +198,8 @@ def upload_file_view(request):
             request.session['csv_filepath']    = csv_path
             request.session['config_filepath'] = config_path
             request.session['project_mode']    = mode
+            request.session['project_id']      = project_id
 
-            # Register project
-            project_id = str(uuid.uuid4())
-            request.session['project_id'] = project_id
             save_project(
                 project_id=project_id,
                 name=os.path.splitext(csv_file.name)[0],
@@ -237,6 +240,8 @@ def define_columns_view(request):
         send_contexts    = request.POST.getlist('send_context')
         tag_input_cols   = request.POST.getlist('tag_input_cols')
         image_params     = request.POST.getlist('image_params')
+        image_naming_col = request.POST.get('image_naming_column', '').strip()
+        image_format     = (request.POST.get('image_format', '').strip() or 'png').lower()
 
         new_config = []
         # zip_longest: image_params is absent in text mode (fills to ''); other
@@ -268,10 +273,14 @@ def define_columns_view(request):
         save_config_file(config_path, new_config)
         request.session['input_columns'] = input_cols
 
-        # Update project with config path
+        # Update project with config path (+ image-mode naming/format settings)
         project_id = request.session.get('project_id')
         if project_id:
-            update_project(project_id, config_path=config_path)
+            update_kwargs = {'config_path': config_path}
+            if mode == 'image':
+                update_kwargs['image_naming_column'] = image_naming_col
+                update_kwargs['image_format'] = image_format
+            update_project(project_id, **update_kwargs)
 
         return redirect('tagging')
 
@@ -294,6 +303,19 @@ def define_columns_view(request):
         context['schedulers']     = get_image_schedulers()
         context['aspect_presets'] = get_aspect_ratio_presets()
         context['active_image_connection'] = get_active_image_connection()
+
+        # Naming column duplicate counts — surfaced next to the naming-column
+        # picker so users see the collision risk before they start a run.
+        dup_counts = {
+            col: int(df[col].astype(str).duplicated(keep=False).sum())
+            for col in all_columns
+        }
+        context['dup_counts_json'] = json.dumps(dup_counts)
+
+        project_id = request.session.get('project_id')
+        proj = get_project(project_id) if project_id else None
+        context['image_naming_column'] = (proj.get('image_naming_column', '') if proj else '') or ''
+        context['image_format'] = (proj.get('image_format', '') if proj else '') or 'png'
     return render(request, 'define_columns.html', context)
 
 
@@ -457,7 +479,6 @@ def results_view(request):
     df            = pd.read_csv(tagged_file)
     table_columns = df.columns.tolist()
     mode          = _project_mode(request)
-    images_dir, images_rel = _images_dir_for_tagged_path(tagged_file) if mode == 'image' else (None, None)
     review_state  = load_review_state(tagged_file) if mode == 'image' else {}
     review_filter = (request.GET.get('filter', 'all') or 'all') if mode == 'image' else 'all'
 
@@ -479,7 +500,7 @@ def results_view(request):
             is_img = sval.lower().endswith(image_exts)
             is_err = sval.startswith('ERROR:')
             review = review_state.get(f"{row_index}:{col}", '') if (mode == 'image' and is_img) else ''
-            candidates = list_image_candidates(images_dir, images_rel, row_index, col) if (mode == 'image' and (is_img or is_err)) else []
+            candidates = list_image_candidates(tagged_file, row_index, col) if (mode == 'image' and (is_img or is_err)) else []
             if mode == 'image' and review_filter != 'all' and (is_img or is_err):
                 if review_filter == 'error' and is_err:
                     row_matches = True
@@ -516,8 +537,11 @@ def results_view(request):
             table_rows.append(cells)
         error_cell_count = 0
 
-    tagged_file_url = settings.MEDIA_URL + os.path.basename(tagged_file)
-    logs_file_url   = (settings.MEDIA_URL + os.path.basename(logs_file)) if logs_file and os.path.exists(logs_file) else None
+    def _media_rel(p):
+        return os.path.relpath(p, settings.MEDIA_ROOT).replace(os.sep, '/')
+
+    tagged_file_url = settings.MEDIA_URL + _media_rel(tagged_file)
+    logs_file_url   = (settings.MEDIA_URL + _media_rel(logs_file)) if logs_file and os.path.exists(logs_file) else None
 
     return render(request, 'results.html', {
         "tagged_file_url":   tagged_file_url,
