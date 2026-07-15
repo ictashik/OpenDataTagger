@@ -3,13 +3,14 @@ import threading
 import json
 import uuid
 import os
+import re
 import time
 from itertools import zip_longest
 
 from django.shortcuts import render, redirect
 from django.conf import settings
 from django.core.files.storage import FileSystemStorage
-from django.http import JsonResponse
+from django.http import JsonResponse, HttpResponse
 from django.core.cache import cache
 import pandas as pd
 
@@ -56,17 +57,36 @@ from .utils import (
     set_review_state,
     BULK_RETRY_STATUS,
     bulk_retry_errors,
+    bulk_retry_selected,
     compare_models_generate,
+    images_dir_for_tagged_path,
+    tagged_path_for_project,
+    build_gallery_items,
+    build_gallery_zip,
 )
 
 
-def _images_dir_for_tagged_path(tagged_path):
-    """Derive the sibling `<name>_images/` folder from a `<name>_tagged.csv`
-    path — mirrors the naming scheme row_by_row_tagger sets up in utils.py."""
-    base = tagged_path[:-len('_tagged.csv')] if tagged_path.endswith('_tagged.csv') else os.path.splitext(tagged_path)[0]
-    images_dir = base + '_images'
-    images_rel = os.path.relpath(images_dir, settings.MEDIA_ROOT).replace(os.sep, '/')
-    return images_dir, images_rel
+def _resolve_project_context(request):
+    """(tagged_file, config_path, session_key, project_id) — resolved from an
+    explicit `project_id` (POST or GET; used by the Gallery, which has no
+    active Django session for whichever project's cards it's showing) or,
+    when absent, from the current session (Results page). Returns all-None
+    when neither resolves to an existing tagged file."""
+    project_id = (request.POST.get('project_id') or request.GET.get('project_id') or '').strip()
+    if project_id:
+        proj = get_project(project_id)
+        if not proj:
+            return None, None, None, None
+        tagged_file = tagged_path_for_project(proj)
+        if not tagged_file or not os.path.exists(tagged_file):
+            return None, None, None, None
+        return tagged_file, proj.get('config_path', ''), proj.get('session_key') or None, project_id
+
+    session_key = request.session.get('tagging_session_key')
+    tagged_file = cache.get(f"tagged_file_{session_key}") if session_key else None
+    if not tagged_file or not os.path.exists(tagged_file):
+        return None, None, None, None
+    return tagged_file, request.session.get('config_filepath'), session_key, request.session.get('project_id')
 
 
 def _project_mode(request):
@@ -561,9 +581,8 @@ def set_review_view(request):
     if request.method != 'POST':
         return JsonResponse({'success': False, 'error': 'POST required.'}, status=400)
 
-    session_key = request.session.get('tagging_session_key')
-    tagged_file = cache.get(f"tagged_file_{session_key}") if session_key else None
-    if not tagged_file or not os.path.exists(tagged_file):
+    tagged_file, _config_path, _session_key, _project_id = _resolve_project_context(request)
+    if not tagged_file:
         return JsonResponse({'success': False, 'error': 'No tagged file for this session.'}, status=400)
 
     try:
@@ -594,7 +613,7 @@ def bulk_retry_view(request):
 
     config_path = request.session.get('config_filepath')
     config_data = load_config_file(config_path) if config_path else []
-    images_dir, images_rel = _images_dir_for_tagged_path(tagged_file)
+    images_dir, images_rel = images_dir_for_tagged_path(tagged_file)
     os.makedirs(images_dir, exist_ok=True)
 
     job_key = str(uuid.uuid4())
@@ -624,9 +643,8 @@ def regenerate_image_view(request):
     if request.method != 'POST':
         return JsonResponse({'success': False, 'error': 'POST required.'}, status=400)
 
-    session_key = request.session.get('tagging_session_key')
-    tagged_file = cache.get(f"tagged_file_{session_key}") if session_key else None
-    if not tagged_file or not os.path.exists(tagged_file):
+    tagged_file, config_path, session_key, project_id = _resolve_project_context(request)
+    if not tagged_file:
         return JsonResponse({'success': False, 'error': 'No tagged file for this session.'}, status=400)
 
     try:
@@ -638,15 +656,14 @@ def regenerate_image_view(request):
         return JsonResponse({'success': False, 'error': 'column is required.'}, status=400)
     lock_seed = request.POST.get('lock_seed', '').strip() == '1'
 
-    config_path = request.session.get('config_filepath')
     config_data = load_config_file(config_path) if config_path else []
-    images_dir, images_rel = _images_dir_for_tagged_path(tagged_file)
+    images_dir, images_rel = images_dir_for_tagged_path(tagged_file)
     os.makedirs(images_dir, exist_ok=True)
 
     try:
         saved_rel, seed_used = regenerate_image_cell(
             tagged_file, config_data, row_index, out_col, images_dir, images_rel,
-            session_key=session_key, project_id=request.session.get('project_id'),
+            session_key=session_key, project_id=project_id,
             lock_seed=lock_seed,
         )
     except Exception as e:
@@ -665,9 +682,8 @@ def select_image_view(request):
     if request.method != 'POST':
         return JsonResponse({'success': False, 'error': 'POST required.'}, status=400)
 
-    session_key = request.session.get('tagging_session_key')
-    tagged_file = cache.get(f"tagged_file_{session_key}") if session_key else None
-    if not tagged_file or not os.path.exists(tagged_file):
+    tagged_file, _config_path, _session_key, _project_id = _resolve_project_context(request)
+    if not tagged_file:
         return JsonResponse({'success': False, 'error': 'No tagged file for this session.'}, status=400)
 
     try:
@@ -684,6 +700,182 @@ def select_image_view(request):
     except Exception as e:
         return JsonResponse({'success': False, 'error': str(e)})
     return JsonResponse({'success': True})
+
+
+# ─── Gallery ─────────────────────────────────────────────────────────────────
+
+def _slug(name):
+    return re.sub(r'[^A-Za-z0-9_-]+', '_', str(name)).strip('_') or 'project'
+
+
+def gallery_view(request, project_id=None):
+    """Per-project (project_id given) or cross-project (project_id=None)
+    image gallery — resolved straight from projects.csv, independent of
+    whatever session/project the user currently has open."""
+    image_projects = [p for p in load_projects() if p.get('mode') == 'image']
+
+    if project_id:
+        current_project = next((p for p in image_projects if str(p['project_id']) == str(project_id)), None)
+        if not current_project:
+            return redirect('home')
+        target_projects = [current_project]
+    else:
+        current_project = None
+        project_filter = request.GET.get('project', '').strip()
+        target_projects = (
+            [p for p in image_projects if str(p['project_id']) == project_filter]
+            if project_filter else image_projects
+        )
+
+    all_items = []
+    for proj in target_projects:
+        proj_items, _tagged, _dir, _rel = build_gallery_items(proj)
+        all_items.extend(proj_items)
+
+    error_count = sum(1 for it in all_items if it['is_error'])
+    review_filter = request.GET.get('filter', 'all') or 'all'
+
+    if review_filter == 'all':
+        items = all_items
+    else:
+        def matches(it):
+            if review_filter == 'error':
+                return it['is_error']
+            if review_filter == 'unreviewed':
+                return it['is_image'] and not it['review']
+            return it['is_image'] and it['review'] == review_filter
+        items = [it for it in all_items if matches(it)]
+
+    MAX_ITEMS = 300
+    truncated = len(items) > MAX_ITEMS
+    items = items[:MAX_ITEMS]
+
+    return render(request, 'gallery.html', {
+        'items':              items,
+        'is_cross_project':   project_id is None,
+        'project':            current_project,
+        'projects_available': image_projects,
+        'project_filter':     request.GET.get('project', ''),
+        'review_filter':      review_filter,
+        'error_count':        error_count,
+        'total_items':        len(all_items),
+        'shown_items':        len(items),
+        'truncated':          truncated,
+    })
+
+
+def gallery_retry_view(request):
+    """Multi-select 'retry' — regenerate an explicit set of (project, row,
+    column) cells, possibly spanning several projects, reusing each cell's
+    own config/prompt (via regenerate_image_cell)."""
+    if request.method != 'POST':
+        return JsonResponse({'success': False, 'error': 'POST required.'}, status=400)
+
+    try:
+        payload = json.loads(request.body or '{}')
+    except ValueError:
+        return JsonResponse({'success': False, 'error': 'Invalid JSON body.'}, status=400)
+
+    raw_items = payload.get('items') or []
+    lock_seed = bool(payload.get('lock_seed'))
+    if not raw_items:
+        return JsonResponse({'success': False, 'error': 'No items selected.'}, status=400)
+
+    by_project = {}
+    for it in raw_items:
+        pid = str(it.get('project_id', '')).strip()
+        col = str(it.get('column', '')).strip()
+        try:
+            row_index = int(it.get('row_index'))
+        except (TypeError, ValueError):
+            continue
+        if not pid or not col:
+            continue
+        by_project.setdefault(pid, []).append((row_index, col))
+
+    groups = []
+    for pid, targets in by_project.items():
+        proj = get_project(pid)
+        if not proj:
+            continue
+        tagged_file = tagged_path_for_project(proj)
+        if not tagged_file or not os.path.exists(tagged_file):
+            continue
+        config_data = load_config_file(proj.get('config_path', ''))
+        images_dir, images_rel = images_dir_for_tagged_path(tagged_file)
+        os.makedirs(images_dir, exist_ok=True)
+        groups.append({
+            'tagged_path': tagged_file, 'config_data': config_data,
+            'images_dir': images_dir, 'images_rel': images_rel,
+            'session_key': proj.get('session_key') or None, 'project_id': pid,
+            'targets': targets,
+        })
+
+    if not groups:
+        return JsonResponse({'success': False, 'error': 'No valid items to retry.'}, status=400)
+
+    job_key = str(uuid.uuid4())
+    t = threading.Thread(
+        target=bulk_retry_selected,
+        args=(job_key, groups),
+        kwargs={'lock_seed': lock_seed},
+        daemon=True,
+    )
+    t.start()
+    return JsonResponse({'success': True, 'job_key': job_key})
+
+
+def gallery_retry_status_view(request):
+    job_key = request.GET.get('job_key', '').strip()
+    if not job_key or job_key not in BULK_RETRY_STATUS:
+        return JsonResponse({'success': False, 'error': 'No such job.'}, status=400)
+    return JsonResponse({'success': True, **BULK_RETRY_STATUS[job_key]})
+
+
+def gallery_zip_view(request):
+    """GET ?project_id=<id> -> whole-project zip; GET with no project_id ->
+    every image-mode project zipped, one subfolder each; POST {items: [...]}
+    -> just the selected images, grouped by project."""
+    selected_items = None
+    if request.method == 'POST':
+        try:
+            payload = json.loads(request.body or '{}')
+        except ValueError:
+            payload = {}
+        selected_items = payload.get('items')
+
+    if selected_items:
+        by_project = {}
+        for it in selected_items:
+            pid = str(it.get('project_id', '')).strip()
+            rel = str(it.get('rel_path', '')).strip()
+            if pid and rel:
+                by_project.setdefault(pid, []).append(rel)
+        entries = []
+        for pid, rels in by_project.items():
+            proj = get_project(pid)
+            if proj:
+                entries.append((proj, rels))
+        if not entries:
+            return JsonResponse({'success': False, 'error': 'No valid items selected.'}, status=400)
+        fname = f"gallery_selected_{int(time.time())}.zip"
+    else:
+        project_id = request.GET.get('project_id', '').strip()
+        if project_id:
+            proj = get_project(project_id)
+            if not proj:
+                return JsonResponse({'success': False, 'error': 'No such project.'}, status=404)
+            entries = [(proj, None)]
+            fname = f"{_slug(proj.get('name') or project_id)}_images_{int(time.time())}.zip"
+        else:
+            projects = [p for p in load_projects() if p.get('mode') == 'image']
+            entries = [(p, None) for p in projects]
+            fname = f"gallery_all_{int(time.time())}.zip"
+
+    zip_bytes = build_gallery_zip(entries)
+    response = HttpResponse(zip_bytes, content_type='application/zip')
+    response['Content-Disposition'] = f'attachment; filename="{fname}"'
+    return response
 
 
 # ─── Connection ──────────────────────────────────────────────────────────────

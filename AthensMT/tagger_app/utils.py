@@ -461,6 +461,15 @@ def _image_base_name(row_data, naming_column, row_index):
     return f"row{row_index}"
 
 
+def images_dir_for_tagged_path(tagged_path):
+    """Derive the sibling `<name>_images/` folder + its MEDIA_ROOT-relative
+    path from a `<name>_tagged.csv` path."""
+    base = tagged_path[:-len('_tagged.csv')] if tagged_path.endswith('_tagged.csv') else os.path.splitext(tagged_path)[0]
+    images_dir = base + '_images'
+    images_rel = os.path.relpath(images_dir, settings.MEDIA_ROOT).replace(os.sep, '/')
+    return images_dir, images_rel
+
+
 # ─── Image manifest (attempt tracking + candidate lookup) ───────────────────
 # A JSON sidecar next to the tagged CSV recording every image ever generated
 # for a given (row, output column), independent of what the file is actually
@@ -633,12 +642,49 @@ BULK_RETRY_STATUS = {}  # job_key -> dict(status, done, total, fixed, failed, me
 _bulk_retry_lock = threading.Lock()
 
 
+def _run_bulk_retry(job_key, groups, lock_seed=False):
+    """Shared retry loop for both 'retry all failed' (one project, error
+    cells only) and the gallery's 'retry selected' (any cells, possibly
+    spanning several projects) — one at a time, since the SD server
+    serializes generation on its end anyway so there's no benefit to
+    parallelizing here.
+
+    groups: [{'tagged_path', 'config_data', 'images_dir', 'images_rel',
+    'session_key', 'project_id', 'targets': [(row_index, col), ...]}, ...]
+    """
+    total = sum(len(g['targets']) for g in groups)
+    with _bulk_retry_lock:
+        BULK_RETRY_STATUS[job_key] = {
+            'status': 'running', 'done': 0, 'total': total,
+            'fixed': 0, 'failed': 0, 'message': '',
+        }
+
+    for g in groups:
+        for row_index, col in g['targets']:
+            try:
+                regenerate_image_cell(
+                    g['tagged_path'], g['config_data'], row_index, col,
+                    g['images_dir'], g['images_rel'],
+                    session_key=g.get('session_key'), project_id=g.get('project_id'),
+                    lock_seed=lock_seed,
+                )
+                with _bulk_retry_lock:
+                    BULK_RETRY_STATUS[job_key]['fixed'] += 1
+            except Exception as e:
+                with _bulk_retry_lock:
+                    BULK_RETRY_STATUS[job_key]['failed'] += 1
+                    BULK_RETRY_STATUS[job_key]['message'] = str(e)
+            with _bulk_retry_lock:
+                BULK_RETRY_STATUS[job_key]['done'] += 1
+
+    with _bulk_retry_lock:
+        BULK_RETRY_STATUS[job_key]['status'] = 'finished'
+
+
 def bulk_retry_errors(job_key, tagged_path, config_data, images_dir, images_rel,
                       session_key=None, project_id=None):
     """Find every image cell currently holding an 'ERROR: ...' value and
-    retry it (fresh seed, same settings), one at a time — the SD server
-    serializes generation on its end anyway so there's no benefit to
-    parallelizing here."""
+    retry it (fresh seed, same settings)."""
     image_cols = {d['OutputColumn'] for d in config_data if (d.get('ImageParams') or '').strip()}
     df = pd.read_csv(tagged_path)
     targets = [
@@ -647,30 +693,134 @@ def bulk_retry_errors(job_key, tagged_path, config_data, images_dir, images_rel,
         for col in image_cols
         if col in df.columns and str(row[col]).startswith('ERROR:')
     ]
+    _run_bulk_retry(job_key, [{
+        'tagged_path': tagged_path, 'config_data': config_data,
+        'images_dir': images_dir, 'images_rel': images_rel,
+        'session_key': session_key, 'project_id': project_id,
+        'targets': targets,
+    }])
 
-    with _bulk_retry_lock:
-        BULK_RETRY_STATUS[job_key] = {
-            'status': 'running', 'done': 0, 'total': len(targets),
-            'fixed': 0, 'failed': 0, 'message': '',
-        }
 
-    for row_index, col in targets:
-        try:
-            regenerate_image_cell(
-                tagged_path, config_data, row_index, col, images_dir, images_rel,
-                session_key=session_key, project_id=project_id,
-            )
-            with _bulk_retry_lock:
-                BULK_RETRY_STATUS[job_key]['fixed'] += 1
-        except Exception as e:
-            with _bulk_retry_lock:
-                BULK_RETRY_STATUS[job_key]['failed'] += 1
-                BULK_RETRY_STATUS[job_key]['message'] = str(e)
-        with _bulk_retry_lock:
-            BULK_RETRY_STATUS[job_key]['done'] += 1
+def bulk_retry_selected(job_key, groups, lock_seed=False):
+    """Retry an explicit list of (row_index, column) cells, grouped by
+    project — the Gallery's multi-select retry (as opposed to
+    bulk_retry_errors, which scans one project for ERROR cells)."""
+    _run_bulk_retry(job_key, groups, lock_seed=lock_seed)
 
-    with _bulk_retry_lock:
-        BULK_RETRY_STATUS[job_key]['status'] = 'finished'
+
+# ─── Gallery (cross-project + per-project image browsing) ──────────────────
+# Unlike the Results page, the Gallery has no single Django session to lean
+# on — the cross-project view spans every image-mode project at once, and a
+# per-project link from Home shouldn't disturb whatever session/project the
+# user currently has open. Everything here is resolved straight from a
+# `projects.csv` row instead.
+
+def tagged_path_for_project(project):
+    csv_path = project.get('csv_path', '') or ''
+    if not csv_path:
+        return ''
+    base, _ext = os.path.splitext(csv_path)
+    return base + '_tagged.csv'
+
+
+def build_gallery_items(project):
+    """Every generated-image cell for one project, flattened into gallery
+    cards. Returns (items, tagged_path, images_dir, images_rel); the latter
+    three are '' / None / '' when the project has no tagged output yet."""
+    tagged_path = tagged_path_for_project(project)
+    if not tagged_path or not os.path.exists(tagged_path):
+        return [], '', None, ''
+
+    config_data = load_config_file(project.get('config_path', ''))
+    image_cols = [d['OutputColumn'] for d in config_data if (d.get('ImageParams') or '').strip()]
+    if not image_cols:
+        return [], tagged_path, None, ''
+
+    images_dir, images_rel = images_dir_for_tagged_path(tagged_path)
+    df = read_csv_safe(tagged_path)
+    review_state = load_review_state(tagged_path)
+    naming_column = project.get('image_naming_column', '') or ''
+    image_exts = ('.png', '.jpg', '.jpeg', '.webp')
+
+    items = []
+    for row_index, row in df.iterrows():
+        for col in image_cols:
+            if col not in df.columns:
+                continue
+            cell = row[col]
+            sval = '' if (isinstance(cell, float) and pd.isna(cell)) else str(cell)
+            if not sval:
+                continue
+            is_err = sval.startswith('ERROR:')
+            is_img = sval.lower().endswith(image_exts)
+            if not (is_err or is_img):
+                continue
+
+            label = ''
+            if naming_column and naming_column in df.columns:
+                nv = row[naming_column]
+                label = '' if (isinstance(nv, float) and pd.isna(nv)) else str(nv)
+            if not label:
+                label = f"row{row_index}"
+
+            items.append({
+                'project_id':      project['project_id'],
+                'project_name':    project.get('name', ''),
+                'row_index':       int(row_index),
+                'column':          col,
+                'value':           sval,
+                'is_image':        is_img,
+                'is_error':        is_err,
+                'url':             (settings.MEDIA_URL + sval) if is_img else '',
+                'candidates_json': json.dumps(list_image_candidates(tagged_path, row_index, col)),
+                'review':          review_state.get(f"{row_index}:{col}", '') if is_img else '',
+                'label':           label,
+            })
+    return items, tagged_path, images_dir, images_rel
+
+
+def build_gallery_zip(entries, include_csv=True):
+    """entries: [(project, rel_paths_or_None), ...] — rel_paths_or_None is a
+    list of MEDIA_ROOT-relative image paths to zip, or None for every file
+    under that project's `<name>_images/` folder. Images are namespaced per
+    project when more than one project is included. Returns raw zip bytes."""
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    multi = len(entries) > 1
+    with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
+        for project, rel_paths in entries:
+            tagged_path = tagged_path_for_project(project)
+            if not tagged_path:
+                continue
+            images_dir, images_rel = images_dir_for_tagged_path(tagged_path)
+            prefix = f"{_safe_col_name(project.get('name') or project['project_id'])}/" if multi else ''
+
+            if rel_paths is None:
+                if os.path.isdir(images_dir):
+                    for fname in sorted(os.listdir(images_dir)):
+                        fpath = os.path.join(images_dir, fname)
+                        if os.path.isfile(fpath):
+                            zf.write(fpath, f"{prefix}images/{fname}")
+            else:
+                media_root = os.path.normpath(settings.MEDIA_ROOT)
+                for rel in rel_paths:
+                    rel = str(rel).replace('\\', '/').lstrip('/')
+                    # Only ever pull files out of *this* project's own images
+                    # folder — rel paths arrive from the client (POST body),
+                    # so this stops a crafted path from reaching outside it.
+                    if not (rel == images_rel or rel.startswith(images_rel + '/')):
+                        continue
+                    fpath = os.path.normpath(os.path.join(settings.MEDIA_ROOT, rel))
+                    if not fpath.startswith(media_root) or not os.path.isfile(fpath):
+                        continue
+                    zf.write(fpath, f"{prefix}images/{os.path.basename(rel)}")
+
+            if include_csv and os.path.isfile(tagged_path):
+                zf.write(tagged_path, f"{prefix}tagged.csv")
+
+    return buf.getvalue()
 
 
 # ─── Compare models ──────────────────────────────────────────────────────────

@@ -1,0 +1,393 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="max-w-7xl mx-auto py-8 space-y-6">
+
+    <!-- Header -->
+    <div class="flex items-center justify-between flex-wrap gap-3">
+        <div>
+            <h1 class="text-2xl font-semibold text-gray-900 dark:text-gray-100">
+                {% if project %}{{ project.name }} — Gallery{% else %}Gallery — All Projects{% endif %}
+            </h1>
+            <p class="text-sm text-gray-500 dark:text-gray-400 mt-0.5">
+                {{ shown_items }} of {{ total_items }} image{{ total_items|pluralize }}{% if review_filter != 'all' %} matching filter "{{ review_filter }}"{% endif %}{% if truncated %} (capped at {{ shown_items }}){% endif %}
+            </p>
+        </div>
+        <div class="flex items-center gap-2">
+            {% if project %}
+            <a href="{% url 'gallery_all' %}" class="text-xs px-3 py-1.5 rounded-md bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-200 hover:bg-gray-300 dark:hover:bg-gray-600">All Projects</a>
+            {% endif %}
+            <a href="#" id="download-all-btn" data-project="{{ project.project_id|default:'' }}"
+               class="text-xs px-3 py-1.5 rounded-md bg-indigo-600 hover:bg-indigo-700 text-white font-medium">&#8681; Download all (zip)</a>
+        </div>
+    </div>
+
+    <!-- Filters / toolbar -->
+    <div class="flex flex-wrap items-center gap-3 bg-white dark:bg-gray-800 rounded-lg shadow p-4">
+        <div class="flex items-center gap-2">
+            <label class="text-xs text-gray-500 dark:text-gray-400">Status:</label>
+            <select id="review-filter" class="text-sm bg-gray-50 dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded px-2 py-1 text-gray-800 dark:text-gray-200">
+                <option value="all" {% if review_filter == 'all' %}selected{% endif %}>All</option>
+                <option value="unreviewed" {% if review_filter == 'unreviewed' %}selected{% endif %}>Unreviewed</option>
+                <option value="approved" {% if review_filter == 'approved' %}selected{% endif %}>Approved</option>
+                <option value="rejected" {% if review_filter == 'rejected' %}selected{% endif %}>Rejected</option>
+                <option value="error" {% if review_filter == 'error' %}selected{% endif %}>Errors only</option>
+            </select>
+        </div>
+        {% if is_cross_project %}
+        <div class="flex items-center gap-2">
+            <label class="text-xs text-gray-500 dark:text-gray-400">Project:</label>
+            <select id="project-filter" class="text-sm bg-gray-50 dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded px-2 py-1 text-gray-800 dark:text-gray-200">
+                <option value="">All projects</option>
+                {% for p in projects_available %}
+                <option value="{{ p.project_id }}" {% if project_filter == p.project_id %}selected{% endif %}>{{ p.name }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        {% endif %}
+        {% if error_count %}
+        <span class="text-xs text-red-500">{{ error_count }} failed cell{{ error_count|pluralize }}</span>
+        {% endif %}
+        <div class="ml-auto flex items-center gap-3 flex-wrap">
+            <label class="flex items-center gap-1.5 text-xs text-gray-500 dark:text-gray-400">
+                <input type="checkbox" id="select-all"> Select all
+            </label>
+            <span id="selected-count" class="text-xs text-gray-400">0 selected</span>
+            <button type="button" id="retry-selected-btn" class="text-xs px-3 py-1.5 rounded-md bg-blue-600 hover:bg-blue-700 text-white font-medium disabled:opacity-40" disabled>&#8635; Retry selected</button>
+            <button type="button" id="retry-selected-locked-btn" class="text-xs px-3 py-1.5 rounded-md bg-blue-700 hover:bg-blue-800 text-white font-medium disabled:opacity-40" title="Reuse the seed behind each selected image" disabled>&#128274; Retry selected</button>
+            <button type="button" id="zip-selected-btn" class="text-xs px-3 py-1.5 rounded-md bg-gray-600 hover:bg-gray-700 text-white font-medium disabled:opacity-40" disabled>&#8681; Zip selected</button>
+        </div>
+    </div>
+    <div id="job-status" class="text-xs text-gray-500 dark:text-gray-400 hidden"></div>
+
+    <!-- Grid -->
+    {% if items %}
+    <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
+        {% for item in items %}
+        <div class="gallery-card bg-white dark:bg-gray-800 rounded-lg shadow overflow-hidden relative"
+             data-project="{{ item.project_id }}" data-row="{{ item.row_index }}" data-col="{{ item.column }}"
+             data-candidates='{{ item.candidates_json }}' data-review="{{ item.review }}" data-relpath="{{ item.value }}">
+            <label class="absolute top-2 left-2 z-10 bg-black/50 rounded p-1 leading-none">
+                <input type="checkbox" class="card-select">
+            </label>
+            <button type="button" class="grid-btn grid-count hidden absolute top-2 right-2 z-10 text-[10px] px-1.5 py-0.5 rounded bg-black/60 text-white"></button>
+            <div class="aspect-square bg-gray-100 dark:bg-gray-900 flex items-center justify-center">
+                {% if item.is_image %}
+                <a href="{{ item.url }}" target="_blank"><img src="{{ item.url }}" class="result-img w-full h-full object-cover" alt=""></a>
+                {% else %}
+                <span class="text-red-400 text-xs p-3 text-center">{{ item.value|truncatechars:80 }}</span>
+                {% endif %}
+            </div>
+            <div class="p-2 space-y-1">
+                <div class="text-xs font-medium text-gray-700 dark:text-gray-200 truncate" title="{{ item.label }}">{{ item.label }}</div>
+                <div class="text-[10px] text-gray-400 truncate">{{ item.column }}{% if is_cross_project %} &middot; {{ item.project_name }}{% endif %}</div>
+                <div class="flex items-center gap-2 pt-1">
+                    <button type="button" class="retry-btn text-[11px] text-blue-500 hover:text-blue-600">&#8635; Retry</button>
+                    <button type="button" class="retry-locked-btn text-[11px] text-blue-400 hover:text-blue-500" title="Retry with the same seed">&#128274;</button>
+                    <button type="button" class="approve-btn text-[11px] {% if item.review == 'approved' %}text-green-500 font-bold{% else %}text-gray-400 hover:text-green-400{% endif %}" title="Approve">&#10003;</button>
+                    <button type="button" class="reject-btn text-[11px] {% if item.review == 'rejected' %}text-red-500 font-bold{% else %}text-gray-400 hover:text-red-400{% endif %}" title="Reject">&#10007;</button>
+                </div>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+    {% else %}
+    <div class="bg-white dark:bg-gray-800 rounded-lg shadow px-6 py-16 text-center">
+        <div class="text-gray-400 text-sm">No generated images {% if review_filter != 'all' %}match this filter{% else %}yet{% endif %}.</div>
+    </div>
+    {% endif %}
+</div>
+
+<!-- Candidate grid modal (retry history + pick-a-variant) -->
+<div id="grid-modal" class="fixed inset-0 bg-black/70 hidden items-center justify-center z-50" style="display:none;">
+    <div class="bg-white dark:bg-gray-800 rounded-lg p-5 max-w-2xl w-full mx-4 max-h-[80vh] overflow-y-auto">
+        <div class="flex items-center justify-between mb-3">
+            <h3 class="text-sm font-semibold text-gray-700 dark:text-gray-200">Choose an image</h3>
+            <button type="button" id="grid-modal-close" class="text-gray-400 hover:text-gray-600 text-lg leading-none">&times;</button>
+        </div>
+        <div id="grid-modal-body" class="grid grid-cols-3 gap-3"></div>
+    </div>
+</div>
+
+<script>
+function escHtmlG(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function getCookieG(name) {
+    var v = document.cookie.match('(^|;)\\s*' + name + '\\s*=\\s*([^;]+)');
+    return v ? v.pop() : '';
+}
+
+/* ═══ Filters ═══════════════════════════════════════════════════ */
+var reviewFilterSel = document.getElementById('review-filter');
+if (reviewFilterSel) {
+    reviewFilterSel.addEventListener('change', function() {
+        var url = new URL(window.location.href);
+        url.searchParams.set('filter', reviewFilterSel.value);
+        window.location.href = url.toString();
+    });
+}
+var projectFilterSel = document.getElementById('project-filter');
+if (projectFilterSel) {
+    projectFilterSel.addEventListener('change', function() {
+        var url = new URL(window.location.href);
+        if (projectFilterSel.value) url.searchParams.set('project', projectFilterSel.value);
+        else url.searchParams.delete('project');
+        window.location.href = url.toString();
+    });
+}
+
+/* ═══ Candidate count badges ═══════════════════════════════════════ */
+document.querySelectorAll('.gallery-card').forEach(function(card) {
+    var candidates = [];
+    try { candidates = JSON.parse(card.dataset.candidates || '[]'); } catch (e) { candidates = []; }
+    var badge = card.querySelector('.grid-count');
+    if (badge && candidates.length > 1) {
+        badge.textContent = '▦ ' + candidates.length;
+        badge.classList.remove('hidden');
+    }
+});
+
+/* ═══ Selection ═══════════════════════════════════════════════════ */
+var selectedCountEl    = document.getElementById('selected-count');
+var retryBtn           = document.getElementById('retry-selected-btn');
+var retryLockedBtn     = document.getElementById('retry-selected-locked-btn');
+var zipSelectedBtn     = document.getElementById('zip-selected-btn');
+
+function selectedCards() {
+    return Array.from(document.querySelectorAll('.gallery-card')).filter(function(c) {
+        var cb = c.querySelector('.card-select');
+        return cb && cb.checked;
+    });
+}
+function updateSelectionUI() {
+    var n = selectedCards().length;
+    selectedCountEl.textContent = n + ' selected';
+    retryBtn.disabled = n === 0;
+    retryLockedBtn.disabled = n === 0;
+    zipSelectedBtn.disabled = n === 0;
+}
+document.querySelectorAll('.card-select').forEach(function(cb) {
+    cb.addEventListener('change', updateSelectionUI);
+});
+var selectAllCb = document.getElementById('select-all');
+if (selectAllCb) {
+    selectAllCb.addEventListener('change', function() {
+        document.querySelectorAll('.card-select').forEach(function(cb) { cb.checked = selectAllCb.checked; });
+        updateSelectionUI();
+    });
+}
+
+function itemsPayload(cards) {
+    return cards.map(function(c) {
+        return {project_id: c.dataset.project, row_index: parseInt(c.dataset.row, 10), column: c.dataset.col};
+    });
+}
+
+/* ═══ Single-card retry ═══════════════════════════════════════════ */
+function refreshCard(card, imageUrl, imageUrls) {
+    var newCandidates = (imageUrls || []).map(function(url, i) {
+        return {url: url, rel_path: url.replace(/^\/media\//, ''), attempt: 0, n: i};
+    });
+    var existing = [];
+    try { existing = JSON.parse(card.dataset.candidates || '[]'); } catch (e) { existing = []; }
+    var merged = newCandidates.concat(existing);
+    card.dataset.candidates = JSON.stringify(merged);
+    var badge = card.querySelector('.grid-count');
+    if (badge && merged.length > 1) { badge.textContent = '▦ ' + merged.length; badge.classList.remove('hidden'); }
+    var img  = card.querySelector('.result-img');
+    var link = card.querySelector('a');
+    if (img) img.src = imageUrl;
+    if (link) link.href = imageUrl;
+    card.dataset.relpath = imageUrl.replace(/^\/media\//, '');
+}
+
+function doCardRetry(card, btn, lockSeed) {
+    var origText = btn.innerHTML;
+    btn.textContent = '…';
+    btn.disabled = true;
+    var fd = new FormData();
+    fd.append('row_index', card.dataset.row);
+    fd.append('column', card.dataset.col);
+    fd.append('project_id', card.dataset.project);
+    if (lockSeed) fd.append('lock_seed', '1');
+    fetch("{% url 'regenerate_image' %}", {
+        method: 'POST', headers: {'X-CSRFToken': getCookieG('csrftoken')}, body: fd,
+    }).then(function(r) { return r.json(); }).then(function(d) {
+        btn.innerHTML = origText;
+        btn.disabled = false;
+        if (!d.success) { alert('Retry failed: ' + (d.error || 'unknown error')); return; }
+        refreshCard(card, d.image_url, d.image_urls);
+    }).catch(function(e) {
+        btn.innerHTML = origText;
+        btn.disabled = false;
+        alert('Retry failed: ' + e);
+    });
+}
+
+document.querySelectorAll('.gallery-card').forEach(function(card) {
+    var rb  = card.querySelector('.retry-btn');
+    var rlb = card.querySelector('.retry-locked-btn');
+    var gb  = card.querySelector('.grid-btn');
+    if (rb) rb.addEventListener('click', function() { doCardRetry(card, rb, false); });
+    if (rlb) rlb.addEventListener('click', function() { doCardRetry(card, rlb, true); });
+    if (gb) gb.addEventListener('click', function() { openGridModal(card); });
+});
+
+/* ═══ Approve / reject ═══════════════════════════════════════════ */
+document.querySelectorAll('.gallery-card').forEach(function(card) {
+    var approveBtn = card.querySelector('.approve-btn');
+    var rejectBtn  = card.querySelector('.reject-btn');
+
+    function setReview(status) {
+        var fd = new FormData();
+        fd.append('row_index', card.dataset.row);
+        fd.append('column', card.dataset.col);
+        fd.append('project_id', card.dataset.project);
+        fd.append('status', status);
+        fetch("{% url 'set_review' %}", {
+            method: 'POST', headers: {'X-CSRFToken': getCookieG('csrftoken')}, body: fd,
+        }).then(function(r) { return r.json(); }).then(function(d) {
+            if (!d.success) { alert('Could not save review: ' + (d.error || 'unknown error')); return; }
+            card.dataset.review = d.status;
+            if (approveBtn) approveBtn.className = 'approve-btn text-[11px] ' +
+                (d.status === 'approved' ? 'text-green-500 font-bold' : 'text-gray-400 hover:text-green-400');
+            if (rejectBtn) rejectBtn.className = 'reject-btn text-[11px] ' +
+                (d.status === 'rejected' ? 'text-red-500 font-bold' : 'text-gray-400 hover:text-red-400');
+        }).catch(function(e) { alert('Could not save review: ' + e); });
+    }
+
+    if (approveBtn) approveBtn.addEventListener('click', function() {
+        setReview(card.dataset.review === 'approved' ? '' : 'approved');
+    });
+    if (rejectBtn) rejectBtn.addEventListener('click', function() {
+        setReview(card.dataset.review === 'rejected' ? '' : 'rejected');
+    });
+});
+
+/* ═══ Grid modal (candidate picker) ═══════════════════════════════ */
+var gridModal     = document.getElementById('grid-modal');
+var gridModalBody = document.getElementById('grid-modal-body');
+var activeGridCard = null;
+
+function openGridModal(card) {
+    activeGridCard = card;
+    var candidates = [];
+    try { candidates = JSON.parse(card.dataset.candidates || '[]'); } catch (e) { candidates = []; }
+    gridModalBody.innerHTML = candidates.map(function(c) {
+        return '<div class="cand-item cursor-pointer border-2 border-transparent hover:border-indigo-500 rounded" data-rel="' + escHtmlG(c.rel_path) + '">' +
+               '<img src="' + escHtmlG(c.url) + '" style="width:100%;height:120px;object-fit:cover;border-radius:6px;">' +
+               '<div class="text-[10px] text-gray-400 text-center mt-1">attempt ' + c.attempt + '</div></div>';
+    }).join('');
+    gridModal.style.display = 'flex';
+    gridModal.classList.remove('hidden');
+}
+function closeGridModal() {
+    gridModal.style.display = 'none';
+    gridModal.classList.add('hidden');
+    activeGridCard = null;
+}
+document.getElementById('grid-modal-close').addEventListener('click', closeGridModal);
+gridModal.addEventListener('click', function(e) { if (e.target === gridModal) closeGridModal(); });
+
+gridModalBody.addEventListener('click', function(e) {
+    var item = e.target.closest('.cand-item');
+    if (!item || !activeGridCard) return;
+    var relPath = item.dataset.rel;
+    var card = activeGridCard;
+    var fd = new FormData();
+    fd.append('row_index', card.dataset.row);
+    fd.append('column', card.dataset.col);
+    fd.append('project_id', card.dataset.project);
+    fd.append('rel_path', relPath);
+    fetch("{% url 'select_image' %}", {
+        method: 'POST', headers: {'X-CSRFToken': getCookieG('csrftoken')}, body: fd,
+    }).then(function(r) { return r.json(); }).then(function(d) {
+        if (!d.success) { alert('Selection failed: ' + (d.error || 'unknown error')); return; }
+        var img  = card.querySelector('.result-img');
+        var link = card.querySelector('a');
+        var url  = '/media/' + relPath;
+        if (img) img.src = url;
+        if (link) link.href = url;
+        card.dataset.relpath = relPath;
+        closeGridModal();
+    }).catch(function(e) { alert('Selection failed: ' + e); });
+});
+
+/* ═══ Bulk retry (selected) ═══════════════════════════════════════ */
+var jobStatusEl = document.getElementById('job-status');
+
+function pollGalleryRetry(jobKey) {
+    fetch("{% url 'gallery_retry_status' %}?job_key=" + encodeURIComponent(jobKey))
+        .then(function(r) { return r.json(); })
+        .then(function(d) {
+            if (!d.success) { jobStatusEl.textContent = 'Error: ' + (d.error || 'unknown'); return; }
+            jobStatusEl.textContent = 'Retrying selected… ' + d.done + '/' + d.total +
+                ' (fixed ' + d.fixed + ', still failing ' + d.failed + ')';
+            if (d.status === 'finished') {
+                jobStatusEl.textContent += ' — done. Reloading…';
+                setTimeout(function() { window.location.reload(); }, 800);
+            } else {
+                setTimeout(function() { pollGalleryRetry(jobKey); }, 1500);
+            }
+        }).catch(function(e) { jobStatusEl.textContent = 'Error polling status: ' + e; });
+}
+
+function startBulkRetry(lockSeed) {
+    var cards = selectedCards();
+    if (!cards.length) return;
+    retryBtn.disabled = true;
+    retryLockedBtn.disabled = true;
+    jobStatusEl.classList.remove('hidden');
+    jobStatusEl.textContent = 'Starting retry job…';
+    fetch("{% url 'gallery_retry' %}", {
+        method: 'POST',
+        headers: {'X-CSRFToken': getCookieG('csrftoken'), 'Content-Type': 'application/json'},
+        body: JSON.stringify({items: itemsPayload(cards), lock_seed: !!lockSeed}),
+    }).then(function(r) { return r.json(); }).then(function(d) {
+        if (!d.success) { jobStatusEl.textContent = 'Error: ' + (d.error || 'unknown error'); updateSelectionUI(); return; }
+        pollGalleryRetry(d.job_key);
+    }).catch(function(e) { jobStatusEl.textContent = 'Error: ' + e; updateSelectionUI(); });
+}
+retryBtn.addEventListener('click', function() { startBulkRetry(false); });
+retryLockedBtn.addEventListener('click', function() { startBulkRetry(true); });
+
+/* ═══ Zip download ════════════════════════════════════════════════ */
+function downloadZipBlob(url, options, filenameFallback) {
+    fetch(url, options).then(function(r) {
+        if (!r.ok) throw new Error('Download failed (' + r.status + ')');
+        var cd = r.headers.get('Content-Disposition') || '';
+        var m = cd.match(/filename="([^"]+)"/);
+        var filename = m ? m[1] : filenameFallback;
+        return r.blob().then(function(b) { return {blob: b, filename: filename}; });
+    }).then(function(res) {
+        var blobUrl = URL.createObjectURL(res.blob);
+        var a = document.createElement('a');
+        a.href = blobUrl;
+        a.download = res.filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(function() { URL.revokeObjectURL(blobUrl); }, 1000);
+    }).catch(function(e) { alert('Download failed: ' + e); });
+}
+
+document.getElementById('download-all-btn').addEventListener('click', function(e) {
+    e.preventDefault();
+    var pid = this.dataset.project;
+    var url = "{% url 'gallery_zip' %}" + (pid ? ('?project_id=' + encodeURIComponent(pid)) : '');
+    downloadZipBlob(url, {}, 'gallery.zip');
+});
+
+zipSelectedBtn.addEventListener('click', function() {
+    var cards = selectedCards();
+    if (!cards.length) return;
+    var items = cards.map(function(c) {
+        return {project_id: c.dataset.project, rel_path: c.dataset.relpath};
+    });
+    downloadZipBlob("{% url 'gallery_zip' %}", {
+        method: 'POST',
+        headers: {'X-CSRFToken': getCookieG('csrftoken'), 'Content-Type': 'application/json'},
+        body: JSON.stringify({items: items}),
+    }, 'gallery_selected.zip');
+});
+</script>
+{% endblock %}

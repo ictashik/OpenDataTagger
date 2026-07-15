@@ -30,6 +30,11 @@ urlpatterns = [
     path(f'{BASE_URL}/results/review/',            views.set_review_view,             name='set_review'),
     path(f'{BASE_URL}/results/bulk-retry/',        views.bulk_retry_view,             name='bulk_retry'),
     path(f'{BASE_URL}/results/bulk-retry/status/', views.bulk_retry_status_view,      name='bulk_retry_status'),
+    path(f'{BASE_URL}/gallery/',                          views.gallery_view,               name='gallery_all'),
+    path(f'{BASE_URL}/gallery/retry/',                    views.gallery_retry_view,         name='gallery_retry'),
+    path(f'{BASE_URL}/gallery/retry/status/',             views.gallery_retry_status_view,  name='gallery_retry_status'),
+    path(f'{BASE_URL}/gallery/zip/',                      views.gallery_zip_view,           name='gallery_zip'),
+    path(f'{BASE_URL}/project/<str:project_id>/gallery/', views.gallery_view,               name='project_gallery'),
     path(f'{BASE_URL}/project/<str:project_id>/open/',   views.project_open_view,   name='project_open'),
     path(f'{BASE_URL}/project/<str:project_id>/delete/', views.delete_project_view, name='project_delete'),
 ]

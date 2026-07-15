@@ -130,6 +130,10 @@
                                 <a href="{% url 'project_open' p.project_id %}?action=results"
                                    class="text-green-500 hover:text-green-700 text-xs font-medium">Results</a>
                                 {% endif %}
+                                {% if p.mode == 'image' %}
+                                <a href="{% url 'project_gallery' p.project_id %}"
+                                   class="text-purple-500 hover:text-purple-700 text-xs font-medium">Gallery</a>
+                                {% endif %}
                                 <a href="{% url 'project_open' p.project_id %}?action=edit"
                                    class="text-indigo-500 hover:text-indigo-700 text-xs font-medium">Edit</a>
                                 <form method="post" action="{% url 'project_delete' p.project_id %}"
