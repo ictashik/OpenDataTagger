@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Installed into .git/hooks/post-merge by scripts/setup_mac.sh so that every
+# `git pull` on this machine automatically restarts Athena ODT with the new
+# code (e.g. picks up settings.py / dependency changes without a manual
+# restart). Safe to re-run; setup_mac.sh stops any already-running instance
+# before starting fresh ones.
+set -euo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+mkdir -p "$REPO_ROOT/.run"
+
+echo "[post-merge] pulled new changes — restarting Athena ODT..."
+nohup "$REPO_ROOT/scripts/setup_mac.sh" >> "$REPO_ROOT/.run/post-merge.log" 2>&1 &
+disown

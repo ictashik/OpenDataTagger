@@ -4,6 +4,11 @@
 # sd_server (native, so it gets real MPS/GPU access — Docker cannot provide
 # that on Mac, see sd_server/README.md) and the Django app in the background.
 #
+# Safe to re-run at any time (e.g. after `git pull`): it stops any instance
+# it previously started before starting fresh ones, so it doubles as a
+# restart script. It also installs a post-merge git hook so that future
+# `git pull`s on this machine auto-restart the app — see scripts/hooks/.
+#
 # Usage: scripts/setup_mac.sh
 # Stop:  scripts/stop.sh
 set -euo pipefail
@@ -14,6 +19,33 @@ cd "$REPO_ROOT"
 ENV_NAME="ODT"
 RUN_DIR="$REPO_ROOT/.run"
 mkdir -p "$RUN_DIR"
+
+if [ -d "$REPO_ROOT/.git" ]; then
+  for hook in "$REPO_ROOT"/scripts/hooks/*; do
+    [ -f "$hook" ] || continue
+    install -m 755 "$hook" "$REPO_ROOT/.git/hooks/$(basename "$hook")"
+  done
+  echo "Installed git hooks (git pull will now auto-restart the app)."
+fi
+
+stop_if_running() {
+  local name="$1" pid_file="$RUN_DIR/$1.pid" pid
+  [ -f "$pid_file" ] || return 0
+  pid="$(cat "$pid_file")"
+  if kill -0 "$pid" 2>/dev/null; then
+    echo "Stopping existing $name (pid $pid)..."
+    kill "$pid" 2>/dev/null || true
+    for _ in $(seq 1 25); do
+      kill -0 "$pid" 2>/dev/null || break
+      sleep 0.2
+    done
+    kill -9 "$pid" 2>/dev/null || true
+  fi
+  rm -f "$pid_file"
+}
+
+stop_if_running sd_server
+stop_if_running app
 
 if ! command -v conda >/dev/null 2>&1; then
   echo "conda not found. Install Miniconda first: https://docs.conda.io/en/latest/miniconda.html" >&2
