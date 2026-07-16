@@ -17,92 +17,134 @@
             {% else %}
                 <p class="text-red-400 mt-2">❌ Tagged file not available!</p>
             {% endif %}
+        </div>
 
-            {% if logs_file_url %}
-                <div class="mt-3">
-                    <a href="{{ logs_file_url }}" class="w-full block px-4 py-2 text-center bg-gray-600 hover:bg-gray-700 text-white font-semibold rounded-lg transition" download>📥 Download Logs</a>
+        <!-- Tabs -->
+        <div class="mt-6 border-b border-gray-700 flex gap-1">
+            <button type="button" class="results-tab-btn px-4 py-2 text-sm font-semibold rounded-t-lg text-white bg-gray-700" data-tab="preview">Preview</button>
+            <button type="button" class="results-tab-btn px-4 py-2 text-sm font-semibold rounded-t-lg text-gray-400 hover:text-gray-200" data-tab="analytics">Analytics</button>
+        </div>
+
+        <div id="tab-preview" class="results-tab-panel">
+            {% if mode == 'image' %}
+            <!-- Review filter + bulk retry -->
+            <div class="mt-6 flex flex-wrap items-center justify-between gap-3">
+                <div class="flex items-center gap-2">
+                    <label class="text-xs text-gray-400">Filter:</label>
+                    <select id="review-filter" class="text-sm bg-gray-700 border border-gray-600 rounded px-2 py-1 text-gray-200">
+                        <option value="all" {% if review_filter == 'all' %}selected{% endif %}>All rows</option>
+                        <option value="unreviewed" {% if review_filter == 'unreviewed' %}selected{% endif %}>Unreviewed</option>
+                        <option value="approved" {% if review_filter == 'approved' %}selected{% endif %}>Approved</option>
+                        <option value="rejected" {% if review_filter == 'rejected' %}selected{% endif %}>Rejected</option>
+                        <option value="error" {% if review_filter == 'error' %}selected{% endif %}>Errors only</option>
+                    </select>
                 </div>
+                {% if error_cell_count %}
+                <div class="flex items-center gap-3">
+                    <span class="text-xs text-red-400">{{ error_cell_count }} failed cell{{ error_cell_count|pluralize }}</span>
+                    <button type="button" id="bulk-retry-btn" class="text-xs px-3 py-1.5 rounded-md bg-blue-600 hover:bg-blue-700 text-white font-medium">&#8635; Retry all failed</button>
+                </div>
+                {% endif %}
+            </div>
+            <div id="bulk-retry-status" class="mt-2 text-xs text-gray-400 hidden"></div>
+            {% endif %}
+
+            <!-- Preview Table -->
+            <div class="mt-6">
+                <h4 class="text-lg font-semibold text-blue-300">Preview</h4>
+                {% if table_columns and table_rows %}
+                    <div class="overflow-x-auto mt-3 bg-gray-900 p-4 rounded-lg border border-gray-700">
+                        <table class="w-full text-sm text-left text-gray-300">
+                            <thead class="text-gray-400 uppercase border-b border-gray-700">
+                                <tr>
+                                    {% for col in table_columns %}
+                                    <th class="px-4 py-2">{{ col }}</th>
+                                    {% endfor %}
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for row in table_rows %}
+                                <tr class="border-b border-gray-700 hover:bg-gray-800 align-top">
+                                    {% for cell in row %}
+                                    <td class="px-4 py-2 img-cell" data-row="{{ cell.row_index }}" data-col="{{ cell.column }}"
+                                        data-candidates="{{ cell.candidates_json }}" data-review="{{ cell.review }}">
+                                        {% if cell.is_image %}
+                                            <a href="{{ cell.url }}" target="_blank">
+                                                <img src="{{ cell.url }}" alt="generated" class="result-img rounded border border-gray-700" style="max-height:120px">
+                                            </a>
+                                            <div class="flex items-center gap-2 mt-1">
+                                                <button type="button" class="retry-btn text-[11px] text-blue-400 hover:text-blue-300">&#8635; Retry</button>
+                                                <button type="button" class="retry-locked-btn text-[11px] text-blue-300 hover:text-blue-200" title="Retry with the same seed — tweak the prompt/settings first to see the effect on this composition">&#128274; Retry</button>
+                                                <button type="button" class="grid-btn text-[11px] text-purple-400 hover:text-purple-300 grid-count hidden"></button>
+                                                <button type="button" class="approve-btn text-[11px] {% if cell.review == 'approved' %}text-green-400 font-bold{% else %}text-gray-500 hover:text-green-300{% endif %}" title="Approve">&#10003;</button>
+                                                <button type="button" class="reject-btn text-[11px] {% if cell.review == 'rejected' %}text-red-400 font-bold{% else %}text-gray-500 hover:text-red-300{% endif %}" title="Reject">&#10007;</button>
+                                            </div>
+                                        {% elif cell.is_image_error %}
+                                            <span class="text-red-400 text-xs block">{{ cell.value }}</span>
+                                            <button type="button" class="retry-btn text-[11px] text-blue-400 hover:text-blue-300 mt-1">&#8635; Retry</button>
+                                        {% else %}
+                                            {{ cell.value }}
+                                        {% endif %}
+                                    </td>
+                                    {% endfor %}
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                {% else %}
+                    <p class="text-red-400 mt-2">❌ No preview available! Data is empty.</p>
+                {% endif %}
+            </div>
+
+            {% if mode == 'image' %}
+            <p class="text-gray-500 text-xs mt-4">* Showing {{ shown_rows }} of {{ total_rows }} row{{ total_rows|pluralize }}{% if review_filter != 'all' %} matching filter "{{ review_filter }}"{% endif %} (max 50).</p>
             {% else %}
-                <p class="text-red-400 mt-2">❌ Logs file not available!</p>
+            <p class="text-gray-500 text-xs mt-4">* The preview shows only the first 10 rows.</p>
             {% endif %}
         </div>
 
-        {% if mode == 'image' %}
-        <!-- Review filter + bulk retry -->
-        <div class="mt-6 flex flex-wrap items-center justify-between gap-3">
-            <div class="flex items-center gap-2">
-                <label class="text-xs text-gray-400">Filter:</label>
-                <select id="review-filter" class="text-sm bg-gray-700 border border-gray-600 rounded px-2 py-1 text-gray-200">
-                    <option value="all" {% if review_filter == 'all' %}selected{% endif %}>All rows</option>
-                    <option value="unreviewed" {% if review_filter == 'unreviewed' %}selected{% endif %}>Unreviewed</option>
-                    <option value="approved" {% if review_filter == 'approved' %}selected{% endif %}>Approved</option>
-                    <option value="rejected" {% if review_filter == 'rejected' %}selected{% endif %}>Rejected</option>
-                    <option value="error" {% if review_filter == 'error' %}selected{% endif %}>Errors only</option>
-                </select>
-            </div>
-            {% if error_cell_count %}
-            <div class="flex items-center gap-3">
-                <span class="text-xs text-red-400">{{ error_cell_count }} failed cell{{ error_cell_count|pluralize }}</span>
-                <button type="button" id="bulk-retry-btn" class="text-xs px-3 py-1.5 rounded-md bg-blue-600 hover:bg-blue-700 text-white font-medium">&#8635; Retry all failed</button>
-            </div>
-            {% endif %}
-        </div>
-        <div id="bulk-retry-status" class="mt-2 text-xs text-gray-400 hidden"></div>
-        {% endif %}
+        <div id="tab-analytics" class="results-tab-panel hidden">
+            <div class="mt-6">
+                <h4 class="text-lg font-semibold text-blue-300">Analytics</h4>
+                <p class="text-gray-500 text-xs mt-1">YES/NO columns across all {{ total_rows }} row{{ total_rows|pluralize }}.</p>
 
-        <!-- Preview Table -->
-        <div class="mt-6">
-            <h4 class="text-lg font-semibold text-blue-300">Preview</h4>
-            {% if table_columns and table_rows %}
-                <div class="overflow-x-auto mt-3 bg-gray-900 p-4 rounded-lg border border-gray-700">
-                    <table class="w-full text-sm text-left text-gray-300">
-                        <thead class="text-gray-400 uppercase border-b border-gray-700">
-                            <tr>
-                                {% for col in table_columns %}
-                                <th class="px-4 py-2">{{ col }}</th>
-                                {% endfor %}
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {% for row in table_rows %}
-                            <tr class="border-b border-gray-700 hover:bg-gray-800 align-top">
-                                {% for cell in row %}
-                                <td class="px-4 py-2 img-cell" data-row="{{ cell.row_index }}" data-col="{{ cell.column }}"
-                                    data-candidates="{{ cell.candidates_json }}" data-review="{{ cell.review }}">
-                                    {% if cell.is_image %}
-                                        <a href="{{ cell.url }}" target="_blank">
-                                            <img src="{{ cell.url }}" alt="generated" class="result-img rounded border border-gray-700" style="max-height:120px">
-                                        </a>
-                                        <div class="flex items-center gap-2 mt-1">
-                                            <button type="button" class="retry-btn text-[11px] text-blue-400 hover:text-blue-300">&#8635; Retry</button>
-                                            <button type="button" class="retry-locked-btn text-[11px] text-blue-300 hover:text-blue-200" title="Retry with the same seed — tweak the prompt/settings first to see the effect on this composition">&#128274; Retry</button>
-                                            <button type="button" class="grid-btn text-[11px] text-purple-400 hover:text-purple-300 grid-count hidden"></button>
-                                            <button type="button" class="approve-btn text-[11px] {% if cell.review == 'approved' %}text-green-400 font-bold{% else %}text-gray-500 hover:text-green-300{% endif %}" title="Approve">&#10003;</button>
-                                            <button type="button" class="reject-btn text-[11px] {% if cell.review == 'rejected' %}text-red-400 font-bold{% else %}text-gray-500 hover:text-red-300{% endif %}" title="Reject">&#10007;</button>
-                                        </div>
-                                    {% elif cell.is_image_error %}
-                                        <span class="text-red-400 text-xs block">{{ cell.value }}</span>
-                                        <button type="button" class="retry-btn text-[11px] text-blue-400 hover:text-blue-300 mt-1">&#8635; Retry</button>
-                                    {% else %}
-                                        {{ cell.value }}
-                                    {% endif %}
-                                </td>
-                                {% endfor %}
-                            </tr>
+                {% if analytics_columns %}
+                <div class="flex items-center gap-4 mt-4 text-xs text-gray-300">
+                    <span class="flex items-center gap-1.5"><span class="inline-block w-2.5 h-2.5 rounded-full" style="background:#0ca30c"></span>Yes</span>
+                    <span class="flex items-center gap-1.5"><span class="inline-block w-2.5 h-2.5 rounded-full" style="background:#d03b3b"></span>No</span>
+                    <span class="flex items-center gap-1.5"><span class="inline-block w-2.5 h-2.5 rounded-full" style="background:#898781"></span>N/A</span>
+                </div>
+
+                <div class="mt-4 space-y-5">
+                    {% for col in analytics_columns %}
+                    <div class="bg-gray-900 border border-gray-700 rounded-lg p-4">
+                        <div class="flex items-baseline justify-between">
+                            <span class="text-sm font-semibold text-gray-200">{{ col.column }}</span>
+                            <span class="text-xs text-gray-500">{{ col.total }} tagged</span>
+                        </div>
+                        <div class="mt-3 h-6 rounded-md overflow-hidden bg-gray-800 flex gap-[2px]">
+                            {% for seg in col.segments %}
+                            <div style="width:{{ seg.pct }}%; background-color:{{ seg.color }};"
+                                 title="{{ seg.label }}: {{ seg.count }} ({{ seg.pct }}%)"></div>
                             {% endfor %}
-                        </tbody>
-                    </table>
+                        </div>
+                        <div class="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-400">
+                            {% for seg in col.segments %}
+                            <span class="flex items-center gap-1.5">
+                                <span class="inline-block w-2 h-2 rounded-full" style="background:{{ seg.color }}"></span>
+                                {{ seg.label }} &middot; {{ seg.count }} ({{ seg.pct }}%)
+                            </span>
+                            {% endfor %}
+                        </div>
+                    </div>
+                    {% endfor %}
                 </div>
-            {% else %}
-                <p class="text-red-400 mt-2">❌ No preview available! Data is empty.</p>
-            {% endif %}
+                {% else %}
+                <p class="text-gray-500 text-sm mt-4">No YES/NO columns found in this run's output.</p>
+                {% endif %}
+            </div>
         </div>
-
-        {% if mode == 'image' %}
-        <p class="text-gray-500 text-xs mt-4">* Showing {{ shown_rows }} of {{ total_rows }} row{{ total_rows|pluralize }}{% if review_filter != 'all' %} matching filter "{{ review_filter }}"{% endif %} (max 50).</p>
-        {% else %}
-        <p class="text-gray-500 text-xs mt-4">* The preview shows only the first 10 rows.</p>
-        {% endif %}
     </div>
 </div>
 
@@ -118,6 +160,21 @@
 </div>
 
 <script>
+/* ═══ Results tabs ══════════════════════════════════════════════ */
+document.querySelectorAll('.results-tab-btn').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+        document.querySelectorAll('.results-tab-btn').forEach(function(b) {
+            b.classList.remove('bg-gray-700', 'text-white');
+            b.classList.add('text-gray-400');
+        });
+        btn.classList.add('bg-gray-700', 'text-white');
+        btn.classList.remove('text-gray-400');
+        document.querySelectorAll('.results-tab-panel').forEach(function(p) { p.classList.add('hidden'); });
+        var panel = document.getElementById('tab-' + btn.dataset.tab);
+        if (panel) panel.classList.remove('hidden');
+    });
+});
+
 function escHtmlR(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 function getCookieR(name) {
     var v = document.cookie.match('(^|;)\\s*' + name + '\\s*=\\s*([^;]+)');

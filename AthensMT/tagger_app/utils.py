@@ -1386,7 +1386,6 @@ def row_by_row_tagger(session_key, csv_path, config_path, input_columns,
             "total":       total_rows,
             "status":      "running",
             "tagged_file": "",
-            "logs_file":   "",
             "start_time":  time.time(),
             "last_update": time.time(),
             "live_logs":   [],
@@ -1394,7 +1393,6 @@ def row_by_row_tagger(session_key, csv_path, config_path, input_columns,
         }
 
         base, ext = os.path.splitext(csv_path)
-        logs_path   = base + "_logs.csv"
         tagged_path = base + "_tagged.csv"
 
         # For image mode, generated images go in a sibling folder under media/;
@@ -1408,17 +1406,24 @@ def row_by_row_tagger(session_key, csv_path, config_path, input_columns,
             os.makedirs(images_dir, exist_ok=True)
 
         cache.set(f"tagged_file_{session_key}", tagged_path, timeout=86400)
-        cache.set(f"logs_file_{session_key}",   logs_path,   timeout=86400)
         PROGRESS_STATUS[session_key]["tagged_file"] = tagged_path
-        PROGRESS_STATUS[session_key]["logs_file"]   = logs_path
 
-        pd.DataFrame(columns=["row_index", "column", "prompt", "best_answer", "explanation"]
-                     ).to_csv(logs_path, index=False)
-
+        # Establish both the answer column and its adjacent `_exp` explanation
+        # column up front (before any row is processed), and keep them
+        # interleaved in config order — so a run interrupted partway through
+        # still leaves a consistent header, and the explanation for a tag is
+        # always readable next to its answer without a separate log file.
+        ordered_output_cols = []
         for definition in output_definitions:
             out_col = definition['OutputColumn']
+            exp_col = out_col + '_exp'
             if out_col not in df.columns:
                 df[out_col] = ""
+            if exp_col not in df.columns:
+                df[exp_col] = ""
+            ordered_output_cols.extend([out_col, exp_col])
+        other_cols = [c for c in df.columns if c not in ordered_output_cols]
+        df = df[other_cols + ordered_output_cols]
         df.to_csv(tagged_path, index=False)
 
         context_cols = [c for c in input_columns if c in df.columns] if input_columns else list(df.columns)
@@ -1508,6 +1513,7 @@ def row_by_row_tagger(session_key, csv_path, config_path, input_columns,
                     )
 
                 df.at[i, out_col] = best_answer
+                df.at[i, out_col + '_exp'] = explanation
                 generated[out_col] = best_answer
                 generated_detail[out_col] = {
                     'prompt':      rendered_prompt,
@@ -1522,7 +1528,6 @@ def row_by_row_tagger(session_key, csv_path, config_path, input_columns,
                     "best_answer": best_answer,
                     "explanation": explanation,
                 }
-                pd.DataFrame([log_entry]).to_csv(logs_path, mode='a', header=False, index=False)
 
                 # live_logs carry extra image_url/image_urls for the frontend
                 # (image_urls has every candidate when num_images > 1, for the
@@ -1586,7 +1591,7 @@ def row_by_row_tagger(session_key, csv_path, config_path, input_columns,
         if project_id:
             update_project(project_id, status='finished', done_rows=total_rows, total_rows=total_rows)
 
-        print(f"DEBUG: Tagging completed -> {tagged_path}, {logs_path}")
+        print(f"DEBUG: Tagging completed -> {tagged_path}")
 
     except Exception as e:
         PROGRESS_STATUS[session_key]["status"]      = f"error: {str(e)}"
@@ -1602,16 +1607,6 @@ def row_by_row_tagger(session_key, csv_path, config_path, input_columns,
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
-
-def get_session_files(session_key, csv_path=None):
-    tagged_file = cache.get(f"tagged_file_{session_key}")
-    logs_file   = cache.get(f"logs_file_{session_key}")
-    if (not tagged_file or not logs_file) and csv_path:
-        base, ext   = os.path.splitext(csv_path)
-        tagged_file = base + "_tagged.csv"
-        logs_file   = base + "_logs.csv"
-    return tagged_file, logs_file
-
 
 def cleanup_abandoned_sessions(force_cleanup_hours=24):
     current_time     = time.time()

@@ -556,20 +556,15 @@ def resume_tagging_view(request):
 def results_view(request):
     session_key = request.session.get('tagging_session_key')
     tagged_file = cache.get(f"tagged_file_{session_key}")
-    logs_file   = cache.get(f"logs_file_{session_key}")
 
     if not tagged_file or not os.path.exists(tagged_file):
         csv_path = request.session.get('csv_filepath')
         if csv_path and os.path.exists(csv_path):
             base, _ = os.path.splitext(csv_path)
             auto_tagged = base + "_tagged.csv"
-            auto_logs   = base + "_logs.csv"
             if os.path.exists(auto_tagged):
                 tagged_file = auto_tagged
-                logs_file   = auto_logs if os.path.exists(auto_logs) else None
                 cache.set(f"tagged_file_{session_key}", tagged_file, timeout=86400)
-                if logs_file:
-                    cache.set(f"logs_file_{session_key}", logs_file, timeout=86400)
             else:
                 return redirect('tagging')
         else:
@@ -640,11 +635,9 @@ def results_view(request):
         return os.path.relpath(p, settings.MEDIA_ROOT).replace(os.sep, '/')
 
     tagged_file_url = settings.MEDIA_URL + _media_rel(tagged_file)
-    logs_file_url   = (settings.MEDIA_URL + _media_rel(logs_file)) if logs_file and os.path.exists(logs_file) else None
 
     return render(request, 'results.html', {
         "tagged_file_url":   tagged_file_url,
-        "logs_file_url":     logs_file_url,
         "table_columns":     table_columns,
         "table_rows":        table_rows,
         "mode":              mode,
@@ -652,7 +645,45 @@ def results_view(request):
         "error_cell_count":  error_cell_count,
         "total_rows":        len(df),
         "shown_rows":        len(table_rows),
+        "analytics_columns": _build_yes_no_analytics(df, table_columns),
     })
+
+
+# Categorical breakdown shown on the Results "Analytics" tab: any column
+# (over the FULL tagged dataset, not just the preview rows) whose non-empty
+# values are entirely YES/NO/N-A. Colors mirror the app's status palette so
+# YES/NO read as affirmative/negative at a glance.
+_ANALYTICS_CATEGORIES = ['YES', 'NO', 'N/A']
+_ANALYTICS_COLORS = {'YES': '#0ca30c', 'NO': '#d03b3b', 'N/A': '#898781'}
+
+
+def _build_yes_no_analytics(df, table_columns):
+    analytics = []
+    for col in table_columns:
+        if col.endswith('_exp'):
+            continue
+        values = df[col].dropna().astype(str).str.strip().str.upper()
+        values = values[values != '']
+        values = values.replace({'NA': 'N/A'})
+        if values.empty:
+            continue
+        uniques = set(values.unique())
+        if not uniques <= set(_ANALYTICS_CATEGORIES) or not (uniques & {'YES', 'NO'}):
+            continue
+
+        total = len(values)
+        segments = []
+        for cat in _ANALYTICS_CATEGORIES:
+            count = int((values == cat).sum())
+            if count:
+                segments.append({
+                    'label': cat,
+                    'count': count,
+                    'pct':   round(count / total * 100, 1),
+                    'color': _ANALYTICS_COLORS[cat],
+                })
+        analytics.append({'column': col, 'total': total, 'segments': segments})
+    return analytics
 
 
 def set_review_view(request):
