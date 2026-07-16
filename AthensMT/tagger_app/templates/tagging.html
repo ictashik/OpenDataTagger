@@ -64,6 +64,30 @@
             <div class="text-gray-200 font-mono truncate" id="disk-free">checking…</div>
         </div>
     </div>
+
+    <!-- Backend system metrics -->
+    <div class="w-full max-w-4xl mt-3 grid grid-cols-2 sm:grid-cols-5 gap-3 text-xs">
+        <div class="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2">
+            <div class="text-gray-500 uppercase tracking-wide text-[10px]">CPU</div>
+            <div class="text-gray-200 font-mono truncate" id="metric-cpu">—</div>
+        </div>
+        <div class="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2">
+            <div class="text-gray-500 uppercase tracking-wide text-[10px]">RAM</div>
+            <div class="text-gray-200 font-mono truncate" id="metric-ram">—</div>
+        </div>
+        <div class="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2">
+            <div class="text-gray-500 uppercase tracking-wide text-[10px]">GPU util</div>
+            <div class="text-gray-200 font-mono truncate" id="metric-gpu-util">—</div>
+        </div>
+        <div class="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2">
+            <div class="text-gray-500 uppercase tracking-wide text-[10px]">VRAM</div>
+            <div class="text-gray-200 font-mono truncate" id="metric-vram">—</div>
+        </div>
+        <div class="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2">
+            <div class="text-gray-500 uppercase tracking-wide text-[10px]">GPU temp</div>
+            <div class="text-gray-200 font-mono truncate" id="metric-temp">—</div>
+        </div>
+    </div>
     {% endif %}
 
     <!-- Progress bar -->
@@ -503,8 +527,32 @@ function pollImageStatus() {
                 var last = data.server_logs[data.server_logs.length - 1];
                 logEl.textContent = last.line;
             }
+
+            setMetric('metric-cpu', data.cpu_percent != null ? data.cpu_percent.toFixed(0) + '%' : null, data.cpu_percent, 90);
+            var ramText = (data.ram_used_mb != null && data.ram_total_mb)
+                ? (data.ram_used_mb / 1024).toFixed(1) + ' / ' + (data.ram_total_mb / 1024).toFixed(1) + ' GB'
+                : null;
+            setMetric('metric-ram', ramText, data.ram_percent, 90);
+            setMetric('metric-gpu-util', data.gpu_util_percent != null ? data.gpu_util_percent.toFixed(0) + '%' : 'n/a', data.gpu_util_percent, 95);
+            var vramText = (data.vram_used_mb != null && data.vram_total_mb)
+                ? (data.vram_used_mb / 1024).toFixed(1) + ' / ' + (data.vram_total_mb / 1024).toFixed(1) + ' GB'
+                : (data.vram_used_mb != null ? (data.vram_used_mb / 1024).toFixed(1) + ' GB used' : 'n/a');
+            var vramPct = (data.vram_used_mb != null && data.vram_total_mb) ? (data.vram_used_mb / data.vram_total_mb * 100) : null;
+            setMetric('metric-vram', vramText, vramPct, 90);
+            setMetric('metric-temp', data.gpu_temp_c != null ? data.gpu_temp_c.toFixed(0) + '°C' : 'n/a', data.gpu_temp_c, 85);
         })
         .catch(function() {});
+}
+
+// Renders a metric badge and flags it red once it crosses `warnAt` — null
+// text (server unreachable) shows as '—' without any color judgement.
+function setMetric(id, text, value, warnAt) {
+    var el = document.getElementById(id);
+    if (!el) return;
+    el.textContent = text == null ? '—' : text;
+    var hot = value != null && value >= warnAt;
+    el.classList.toggle('text-red-400', hot);
+    el.classList.toggle('text-gray-200', !hot);
 }
 
 document.addEventListener('DOMContentLoaded', poll);

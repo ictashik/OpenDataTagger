@@ -290,6 +290,16 @@ def get_image_server_status(timeout=4):
         return {}
 
 
+def get_image_server_metrics(timeout=4):
+    """Live CPU/RAM/GPU load on the machine running the SD server, for the
+    tagging page's system-metrics panel. Returns {} if unreachable — the
+    caller renders that as '—' rather than erroring."""
+    try:
+        return _sd_request('/metrics', timeout=timeout)
+    except Exception:
+        return {}
+
+
 def request_image_generation_cancel(timeout=4):
     """Best-effort: ask the SD server to interrupt whatever it's doing right
     now. See sd_server's models.request_cancel for what this can and can't

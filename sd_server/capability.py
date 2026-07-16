@@ -66,3 +66,96 @@ def detect_capability():
         pass
 
     return info
+
+
+def _cpu_ram_metrics():
+    try:
+        import psutil
+        vm = psutil.virtual_memory()
+        return {
+            "cpu_percent":  psutil.cpu_percent(interval=None),
+            "ram_used_mb":  int(vm.used / (1024 * 1024)),
+            "ram_total_mb": int(vm.total / (1024 * 1024)),
+            "ram_percent":  vm.percent,
+        }
+    except Exception:
+        return {"cpu_percent": None, "ram_used_mb": None, "ram_total_mb": None, "ram_percent": None}
+
+
+def _nvidia_gpu_metrics():
+    """Live utilization/temperature/VRAM via nvidia-ml-py — no sudo needed,
+    but only installed/available on machines with an NVIDIA GPU (see
+    requirements.txt). Returns None (fields report as unavailable) rather
+    than raising if the library or a GPU isn't present."""
+    try:
+        import pynvml
+        pynvml.nvmlInit()
+        try:
+            handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+            util = pynvml.nvmlDeviceGetUtilizationRates(handle)
+            mem  = pynvml.nvmlDeviceGetMemoryInfo(handle)
+            try:
+                temp = pynvml.nvmlDeviceGetTemperature(handle, pynvml.NVML_TEMPERATURE_GPU)
+            except Exception:
+                temp = None
+            return {
+                "utilization_percent": util.gpu,
+                "vram_used_mb":        int(mem.used / (1024 * 1024)),
+                "vram_total_mb":       int(mem.total / (1024 * 1024)),
+                "temperature_c":       temp,
+            }
+        finally:
+            pynvml.nvmlShutdown()
+    except Exception:
+        return None
+
+
+def _mps_gpu_metrics():
+    """Apple Silicon has no public, sudo-free API for GPU utilization or
+    temperature (powermetrics can report both but requires root, which this
+    server won't request). VRAM-used is approximable via torch's own MPS
+    allocator accounting — real, just PyTorch's view of it rather than the
+    whole system's."""
+    try:
+        import torch
+        used = torch.mps.driver_allocated_memory()
+        return {
+            "utilization_percent": None,
+            "vram_used_mb":        int(used / (1024 * 1024)),
+            "vram_total_mb":       None,  # filled in by caller from system RAM
+            "temperature_c":       None,
+        }
+    except Exception:
+        return None
+
+
+def get_live_metrics():
+    """Point-in-time system load for the tagging page's metrics panel.
+    Cheap to call repeatedly (polled every few seconds) — no persistent
+    state beyond what psutil/pynvml/torch already track internally."""
+    base = _cpu_ram_metrics()
+    cap  = detect_capability()
+
+    gpu = {
+        "backend":              cap["backend"],
+        "device_name":          cap["device_name"],
+        "utilization_percent":  None,
+        "vram_used_mb":         None,
+        "vram_total_mb":        cap.get("vram_total_mb") or None,
+        "temperature_c":        None,
+    }
+
+    if cap["backend"] == "cuda":
+        nv = _nvidia_gpu_metrics()
+        if nv:
+            gpu.update(nv)
+        else:
+            # torch already gave us total/free at capability-detection time.
+            gpu["vram_used_mb"] = (cap.get("vram_total_mb") or 0) - (cap.get("vram_free_mb") or 0)
+    elif cap["backend"] == "mps":
+        mps = _mps_gpu_metrics()
+        if mps:
+            gpu.update(mps)
+            gpu["vram_total_mb"] = cap.get("vram_total_mb")  # unified RAM, from capability
+
+    return {**base, "gpu": gpu}

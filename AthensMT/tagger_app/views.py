@@ -49,6 +49,7 @@ from .utils import (
     get_image_schedulers,
     get_image_server_health,
     get_image_server_status,
+    get_image_server_metrics,
     request_image_generation_cancel,
     get_disk_usage,
     summarize_image_run_settings,
@@ -453,9 +454,11 @@ def tagging_image_status_view(request):
     (image mode only) — polled independently of the progress endpoint since
     it hits the SD server and disk, and shouldn't slow down the 1s progress
     poll or run on every other page's sidebar."""
-    health = get_image_server_health()
-    status = get_image_server_status()
-    disk   = get_disk_usage()
+    health  = get_image_server_health()
+    status  = get_image_server_status()
+    disk    = get_disk_usage()
+    metrics = get_image_server_metrics()
+    gpu     = metrics.get('gpu', {})
     return JsonResponse({
         'loaded_model':      health.get('loaded_model') or '',
         'server_reachable':  bool(health),
@@ -466,6 +469,16 @@ def tagging_image_status_view(request):
         'disk_free_human':   disk['free_human']   if disk else None,
         'disk_total_human':  disk['total_human']  if disk else None,
         'disk_percent_free': disk['percent_free'] if disk else None,
+        'cpu_percent':       metrics.get('cpu_percent'),
+        'ram_used_mb':       metrics.get('ram_used_mb'),
+        'ram_total_mb':      metrics.get('ram_total_mb'),
+        'ram_percent':       metrics.get('ram_percent'),
+        'gpu_backend':       gpu.get('backend'),
+        'gpu_device_name':   gpu.get('device_name'),
+        'gpu_util_percent':  gpu.get('utilization_percent'),
+        'vram_used_mb':      gpu.get('vram_used_mb'),
+        'vram_total_mb':     gpu.get('vram_total_mb'),
+        'gpu_temp_c':        gpu.get('temperature_c'),
     })
 
 

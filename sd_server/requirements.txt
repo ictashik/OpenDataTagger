@@ -18,3 +18,8 @@ psutil
 sentencepiece
 protobuf
 python-dotenv
+
+# Optional: live NVIDIA GPU utilization/temperature for the metrics panel.
+# Skipped gracefully (util/temp report as unavailable) if not installed or
+# there's no NVIDIA GPU — irrelevant on Apple Silicon / CPU-only setups.
+nvidia-ml-py; sys_platform == "linux" or sys_platform == "win32"

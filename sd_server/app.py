@@ -27,7 +27,7 @@ load_dotenv(os.path.join(_SERVER_DIR, ".env"))
 
 import downloader
 import models as model_mgr
-from capability import detect_capability
+from capability import detect_capability, get_live_metrics
 
 app = FastAPI(title="ODT Stable Diffusion Server")
 
@@ -76,6 +76,13 @@ def cancel():
 @app.get("/capability")
 def capability():
     return detect_capability()
+
+
+@app.get("/metrics")
+def metrics():
+    """Live CPU/RAM/GPU load for the tagging page's system-metrics panel —
+    separate from the static, one-time /capability report."""
+    return get_live_metrics()
 
 
 @app.get("/models")
