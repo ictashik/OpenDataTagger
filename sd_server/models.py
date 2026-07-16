@@ -76,7 +76,15 @@ def _load(model_id, token=None):
             # Some repos don't ship safetensors — retry without the flag.
             pipe = AutoPipelineForText2Image.from_pretrained(model_id, **common)
 
-    pipe = pipe.to(device)
+    if device == "cpu":
+        pipe = pipe.to(device)
+    else:
+        # Stream weights layer-by-layer instead of materializing the whole
+        # pipeline on-device at once — Flux/SD3.5-sized models can exceed
+        # physical RAM, and on Apple Silicon "device" memory is the same
+        # unified pool as system RAM, so a plain .to(device) has no headroom
+        # to fall back on and gets killed by the OS under memory pressure.
+        pipe.enable_sequential_cpu_offload(device=device)
     for opt in ("enable_attention_slicing", "enable_vae_slicing"):
         try:
             getattr(pipe, opt)()
