@@ -206,8 +206,14 @@ def upload_file_view(request):
             # Each project gets its own media/<project_id>/ folder so two
             # uploads sharing a filename (e.g. two "test.csv" runs) never
             # collide on disk or bleed stale rows/images into each other.
+            # Anchored to MEDIA_ROOT (not a bare relative 'media/...') so it
+            # lands in the right place regardless of the server's cwd — a
+            # relative path here previously put new projects outside
+            # MEDIA_ROOT whenever manage.py was launched from the repo root
+            # (as CLAUDE.md's documented command does), leaving every
+            # download link 404ing (and being saved as a bogus "csv").
             project_id  = str(uuid.uuid4())
-            project_dir = os.path.join('media', project_id)
+            project_dir = os.path.join(settings.MEDIA_ROOT, project_id)
             os.makedirs(project_dir, exist_ok=True)
 
             fs       = FileSystemStorage(location=project_dir)
