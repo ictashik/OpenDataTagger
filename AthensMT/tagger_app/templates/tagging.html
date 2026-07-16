@@ -42,6 +42,30 @@
         {% endif %}
     </div>
 
+    {% if mode == 'image' %}
+    <!-- Model / LoRA / disk status -->
+    <div class="w-full max-w-4xl mt-4 grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+        <div class="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2">
+            <div class="text-gray-500 uppercase tracking-wide text-[10px]">Configured model{{ run_info.models|length|pluralize }}</div>
+            <div class="text-gray-200 font-mono truncate" title="{{ run_info.models|join:', ' }}">{% if run_info.models %}{{ run_info.models|join:", " }}{% else %}—{% endif %}</div>
+        </div>
+        <div class="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2">
+            <div class="text-gray-500 uppercase tracking-wide text-[10px]">LoRA adapter{{ run_info.loras|length|pluralize }}</div>
+            <div class="text-gray-200 font-mono truncate">
+                {% if run_info.loras %}{% for l in run_info.loras %}{{ l.id }} ({{ l.scale }}){% if not forloop.last %}, {% endif %}{% endfor %}{% else %}None{% endif %}
+            </div>
+        </div>
+        <div class="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2">
+            <div class="text-gray-500 uppercase tracking-wide text-[10px]">Loaded on server</div>
+            <div class="text-gray-200 font-mono truncate" id="loaded-model">checking…</div>
+        </div>
+        <div class="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2">
+            <div class="text-gray-500 uppercase tracking-wide text-[10px]">Disk free</div>
+            <div class="text-gray-200 font-mono truncate" id="disk-free">checking…</div>
+        </div>
+    </div>
+    {% endif %}
+
     <!-- Progress bar -->
     <div class="w-full max-w-4xl mt-6">
         <div class="flex justify-between text-xs text-gray-400 mb-1">
@@ -81,6 +105,21 @@
             </div>
         </div>
     </div>
+
+    {% if mode == 'image' %}
+    <!-- Live image gallery -->
+    <div class="w-full max-w-4xl mt-4 mb-10">
+        <div class="flex items-center justify-between mb-2">
+            <h3 class="text-sm font-semibold text-gray-300 uppercase tracking-wide">Gallery</h3>
+            <span id="gallery-count" class="text-xs text-gray-500">0 images</span>
+        </div>
+        <div id="gallery-box"
+             class="min-h-[8rem] max-h-[32rem] overflow-y-auto bg-black rounded-lg border border-gray-700 p-3">
+            <p id="gallery-empty" class="text-gray-600 text-xs font-mono">Images will appear here as they're generated…</p>
+            <div id="gallery-grid" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3"></div>
+        </div>
+    </div>
+    {% endif %}
 </div>
 
 <script>
@@ -160,22 +199,50 @@ function appendLogs(logs) {
         promptLine.innerHTML = '<b>Prompt:</b> ' + escHtml(log.prompt);
         entry.appendChild(promptLine);
 
-        if (log.image_urls && log.image_urls.length > 1) {
-            // Batch grid preview: multiple images from one num_images > 1 call.
-            var grid = document.createElement('div');
-            grid.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;';
-            grid.innerHTML = log.image_urls.map(function(url) {
-                return '<a href="' + escHtml(url) + '" target="_blank">' +
-                    '<img src="' + escHtml(url) + '" alt="generated" ' +
-                    'style="max-height:120px;border-radius:6px;border:1px solid #374151;"></a>';
-            }).join('');
-            entry.appendChild(grid);
-        } else if (log.image_url) {
-            var imgWrap = document.createElement('div');
-            imgWrap.innerHTML = '<a href="' + escHtml(log.image_url) + '" target="_blank">' +
-                '<img src="' + escHtml(log.image_url) + '" alt="generated" ' +
-                'style="max-height:180px;border-radius:6px;margin-top:4px;border:1px solid #374151;"></a>';
-            entry.appendChild(imgWrap);
+        var hasImages = (log.image_urls && log.image_urls.length > 0) || log.image_url;
+        if (isImageMode && hasImages) {
+            // Thumbnails live in the Gallery below, not inline in the log —
+            // here we just print what was generated.
+            var meta  = log.image_meta || {};
+            var count = (log.image_urls && log.image_urls.length) || 1;
+            var parts = [count === 1 ? '1 image generated' : count + ' images generated'];
+            if (meta.model)                        parts.push('model: ' + meta.model);
+            if (meta.loras && meta.loras.length)   parts.push('LoRA: ' + meta.loras.map(function(l) {
+                return l.id + (l.scale != null ? ' (' + l.scale + ')' : '');
+            }).join(', '));
+            if (meta.seed !== undefined && meta.seed !== null) parts.push('seed ' + meta.seed);
+            if (meta.width && meta.height)         parts.push(meta.width + '×' + meta.height);
+            if (meta.steps)                        parts.push(meta.steps + ' steps');
+            if (meta.guidance)                     parts.push('guidance ' + meta.guidance);
+            if (meta.scheduler)                    parts.push(meta.scheduler);
+            if (meta.attempt)                      parts.push('attempt #' + (meta.attempt + 1));
+            if (meta.elapsed_sec != null)          parts.push(Number(meta.elapsed_sec).toFixed(1) + 's');
+
+            var detail = document.createElement('div');
+            detail.className = 'text-green-400';
+            detail.textContent = parts.join(' · ');
+            entry.appendChild(detail);
+
+            var galleryLine = document.createElement('div');
+            galleryLine.className = 'text-gray-500 text-[11px] mt-0.5';
+            galleryLine.textContent = '↓ added to gallery below';
+            entry.appendChild(galleryLine);
+
+            addToGallery(log);
+        } else if (isImageMode) {
+            var meta   = log.image_meta || {};
+            var answer = String(log.best_answer);
+            var isErr  = !!meta.error || answer.indexOf('ERROR:') === 0;
+            var line   = document.createElement('div');
+            if (isErr) {
+                line.className = 'text-red-400';
+                line.innerHTML = '<b>Error:</b> ' + escHtml(meta.error || answer);
+            } else {
+                // Condition was false — no generation attempted, default value used.
+                line.className = 'text-gray-500';
+                line.innerHTML = '<b>Skipped:</b> ' + escHtml(answer) + ' — ' + escHtml(log.explanation);
+            }
+            entry.appendChild(line);
         } else {
             var answerLine = document.createElement('div');
             answerLine.className = 'text-green-400';
@@ -217,6 +284,36 @@ function appendLogs(logs) {
         box.insertBefore(entry, indicator);
     });
     if (logs.length) box.scrollTop = box.scrollHeight;
+}
+
+var galleryTotal = 0;
+function addToGallery(log) {
+    var grid = document.getElementById('gallery-grid');
+    if (!grid) return;
+    var urls = (log.image_urls && log.image_urls.length) ? log.image_urls : (log.image_url ? [log.image_url] : []);
+    if (!urls.length) return;
+
+    var empty = document.getElementById('gallery-empty');
+    if (empty) { empty.remove(); empty = null; }
+
+    urls.forEach(function(url) {
+        var card = document.createElement('a');
+        card.href = url;
+        card.target = '_blank';
+        card.className = 'relative block rounded-lg overflow-hidden border border-gray-700 bg-gray-900 aspect-square';
+        card.innerHTML =
+            '<img src="' + escHtml(url) + '" alt="generated" class="w-full h-full object-cover" loading="lazy">' +
+            '<span class="absolute bottom-0 left-0 right-0 bg-black/70 text-[10px] text-gray-300 px-1.5 py-0.5 truncate">' +
+                'Row ' + log.row_index + ' · ' + escHtml(log.column) +
+            '</span>';
+        grid.appendChild(card);
+        galleryTotal++;
+    });
+
+    var countEl = document.getElementById('gallery-count');
+    if (countEl) countEl.textContent = galleryTotal + (galleryTotal === 1 ? ' image' : ' images');
+    var box = document.getElementById('gallery-box');
+    if (box) box.scrollTop = box.scrollHeight;
 }
 
 function escHtml(s) {
@@ -315,6 +412,34 @@ function poll() {
         .catch(function() { setTimeout(poll, 2000); });
 }
 
+function pollImageStatus() {
+    fetch("{% url 'tagging_image_status' %}")
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            var loadedEl = document.getElementById('loaded-model');
+            if (loadedEl) {
+                loadedEl.textContent = data.server_reachable ? (data.loaded_model || '—') : 'server unreachable';
+            }
+            var diskEl = document.getElementById('disk-free');
+            if (diskEl) {
+                if (data.disk_free_human) {
+                    diskEl.textContent = data.disk_free_human + ' (' + data.disk_percent_free + '%)';
+                    diskEl.classList.toggle('text-red-400', data.disk_percent_free < 10);
+                    diskEl.classList.toggle('text-gray-200', data.disk_percent_free >= 10);
+                } else {
+                    diskEl.textContent = 'unknown';
+                }
+            }
+        })
+        .catch(function() {});
+}
+
 document.addEventListener('DOMContentLoaded', poll);
+if (isImageMode) {
+    document.addEventListener('DOMContentLoaded', function() {
+        pollImageStatus();
+        setInterval(pollImageStatus, 5000);
+    });
+}
 </script>
 {% endblock %}

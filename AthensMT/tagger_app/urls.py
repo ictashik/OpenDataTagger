@@ -12,6 +12,7 @@ urlpatterns = [
     path(f'{BASE_URL}/tagging/progress/',          views.tagging_progress_view,   name='tagging_progress'),
     path(f'{BASE_URL}/tagging/pause/',             views.pause_tagging_view,      name='pause_tagging'),
     path(f'{BASE_URL}/tagging/resume/',            views.resume_tagging_view,     name='resume_tagging'),
+    path(f'{BASE_URL}/tagging/image-status/',      views.tagging_image_status_view, name='tagging_image_status'),
     path(f'{BASE_URL}/llm_status/',                views.llm_status_view,         name='llm_status'),
     path(f'{BASE_URL}/results/',                   views.results_view,            name='results'),
     path(f'{BASE_URL}/connection/',                views.connection_editor_view,  name='connection_editor'),

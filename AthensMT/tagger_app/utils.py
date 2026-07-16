@@ -31,6 +31,7 @@ STATS_CSV             = os.path.join(_base, '..', 'stats.csv')
 
 PAUSE_FLAGS = {}     # session_key -> bool  (True = paused)
 PROGRESS_STATUS = {} # session_key -> dict
+CANCEL_FLAGS = {}    # session_key -> bool  (True = stop ASAP, e.g. project was deleted)
 
 _stats_lock    = threading.Lock()
 _projects_lock = threading.Lock()
@@ -264,6 +265,71 @@ def get_image_schedulers(timeout=6):
     except Exception as e:
         print(f"Image schedulers unavailable: {e}")
         return [{'key': 'default', 'label': 'Default (as shipped)'}]
+
+
+def get_image_server_health(timeout=4):
+    """Live SD server state — which model is actually loaded in memory right
+    now. This can lag or differ from what a tag's ImageParams requests (e.g.
+    right after switching the active model), so it's surfaced separately
+    from the configured model on the tagging page. Returns {} if the server
+    is unreachable rather than raising, since this backs a status display."""
+    try:
+        return _sd_request('/health', timeout=timeout)
+    except Exception:
+        return {}
+
+
+def _human_bytes(n):
+    n = float(n)
+    for unit in ('B', 'KB', 'MB', 'GB', 'TB'):
+        if n < 1024 or unit == 'TB':
+            return f"{n:.0f} {unit}" if unit == 'B' else f"{n:.1f} {unit}"
+        n /= 1024
+
+
+def get_disk_usage(path=None):
+    """Free/total space on the filesystem backing generated-image storage —
+    a long image-mode run can fill a disk, so this is surfaced live on the
+    tagging page. Returns None if the path can't be statted."""
+    path = path or settings.MEDIA_ROOT
+    try:
+        total, used, free = shutil.disk_usage(path)
+    except OSError:
+        return None
+    return {
+        'free_bytes':   free,
+        'total_bytes':  total,
+        'free_human':   _human_bytes(free),
+        'total_human':  _human_bytes(total),
+        'percent_free': round(free / total * 100, 1) if total else 0,
+    }
+
+
+def summarize_image_run_settings(config_data, conn=None):
+    """Distinct models + LoRAs declared across an image-mode run's tag
+    definitions, for the tagging page's status panel — per-tag ImageParams
+    can override the active connection's model, so what actually gets used
+    isn't always obvious from the sidebar alone."""
+    conn = conn or get_active_image_connection()
+    models = set()
+    loras = {}
+    for d in config_data:
+        try:
+            params = json.loads(d.get('ImageParams') or '{}')
+            if not isinstance(params, dict):
+                params = {}
+        except (ValueError, TypeError):
+            params = {}
+        model = (params.get('model') or conn.get('model') or '').strip()
+        if model:
+            models.add(model)
+        for lora in _normalize_loras(params):
+            if lora.get('id'):
+                loras[lora['id']] = lora.get('scale', 1.0)
+    return {
+        'models': sorted(models) if models else ([conn['model']] if conn.get('model') else []),
+        'loras':  [{'id': k, 'scale': v} for k, v in sorted(loras.items())],
+    }
 
 
 def load_style_presets():
@@ -943,12 +1009,14 @@ def _generate_image_for_tag(definition, rendered_prompt, images_dir, images_rel,
                             row_data=None, naming_column='', image_format='png'):
     """Run one image generation for a tag, save the image(s), record a stat.
 
-    Returns (cell_value, explanation, image_url, all_relative_paths):
+    Returns (cell_value, explanation, image_url, all_relative_paths, gen_meta):
     cell_value is the MEDIA_ROOT-relative path of the first image written
     into the tagged CSV (or an "ERROR: …" string on failure); image_url is
     that path prefixed with MEDIA_URL for the live-log thumbnail ('' on
     failure); all_relative_paths lists every image from this call (for
-    num_images > 1 / the grid picker).
+    num_images > 1 / the grid picker); gen_meta carries the generation
+    parameters/timing for the live-log detail line ('error' key set on
+    failure instead).
     """
     try:
         params = json.loads(definition.get('ImageParams') or '{}')
@@ -964,9 +1032,12 @@ def _generate_image_for_tag(definition, rendered_prompt, images_dir, images_rel,
         usage['prompt_tokens'], usage['completion_tokens'], usage['elapsed_sec'],
     )
 
+    model = params.get('model') or usage.get('model', '')
+
     if not images:
         err = meta.get('error', 'unknown error')
-        return f"ERROR: {err}", f"Image generation failed: {err}", '', []
+        gen_meta = {'model': model, 'elapsed_sec': usage.get('elapsed_sec'), 'error': err}
+        return f"ERROR: {err}", f"Image generation failed: {err}", '', [], gen_meta
 
     base_name = _image_base_name(row_data, naming_column, row_index)
     attempt   = _next_attempt_index(tagged_path, row_index, out_col)
@@ -976,10 +1047,22 @@ def _generate_image_for_tag(definition, rendered_prompt, images_dir, images_rel,
 
     cell_value = saved_rel[0]
     image_url  = settings.MEDIA_URL + saved_rel[0]
-    model = params.get('model') or usage.get('model', '')
     seed  = meta.get('seed_used')
     explanation = f"Generated with {model}" + (f" (seed {seed})" if seed is not None else "")
-    return cell_value, explanation, image_url, saved_rel
+    gen_meta = {
+        'model':        model,
+        'loras':        _normalize_loras(params),
+        'seed':         seed,
+        'width':        _coerce_int(params.get('width'), 512),
+        'height':       _coerce_int(params.get('height'), 512),
+        'steps':        _coerce_int(params.get('steps'), 30),
+        'guidance':     _coerce_float(params.get('guidance'), 7.5),
+        'scheduler':    (params.get('scheduler') or 'default').strip() or 'default',
+        'num_images':   len(saved_rel),
+        'attempt':      attempt,
+        'elapsed_sec':  usage.get('elapsed_sec'),
+    }
+    return cell_value, explanation, image_url, saved_rel, gen_meta
 
 
 # ─── Projects ────────────────────────────────────────────────────────────────
@@ -1071,6 +1154,16 @@ def delete_project(project_id):
         target = next((p for p in projects if str(p['project_id']) == str(project_id)), None)
         projects = [p for p in projects if str(p['project_id']) != str(project_id)]
         pd.DataFrame(projects).to_csv(path, index=False)
+
+    # A running/paused tagging thread for this project may still be alive
+    # (e.g. the user paused it, then deleted the project without stopping
+    # it first). Signal it to stop and unblock the pause wait-loop so it
+    # exits on its own instead of looping forever against files we're
+    # about to delete.
+    session_key = target.get('session_key') if target else None
+    if session_key and session_key in PROGRESS_STATUS:
+        CANCEL_FLAGS[session_key] = True
+        PAUSE_FLAGS[session_key] = False
 
     # Projects created after the per-project-folder change store all their
     # files under media/<project_id>/ — safe to remove outright. Older
@@ -1265,6 +1358,7 @@ def row_by_row_tagger(session_key, csv_path, config_path, input_columns,
             "start_time":  time.time(),
             "last_update": time.time(),
             "live_logs":   [],
+            "project_id":  project_id,
         }
 
         base, ext = os.path.splitext(csv_path)
@@ -1314,6 +1408,8 @@ def row_by_row_tagger(session_key, csv_path, config_path, input_columns,
             update_project(project_id, status='running', total_rows=total_rows, session_key=session_key)
 
         for i in range(total_rows):
+            if CANCEL_FLAGS.get(session_key, False):
+                break
             row             = df.loc[i]
             row_context     = {c: row[c] for c in context_cols}
             all_row_context = {c: row[c] for c in df.columns}  # every CSV column
@@ -1353,9 +1449,10 @@ def row_by_row_tagger(session_key, csv_path, config_path, input_columns,
 
                 image_url = ''
                 image_urls = []
+                image_meta = None
                 if evaluate_condition(definition, all_context):
                     if mode == 'image':
-                        best_answer, explanation, image_url, all_paths = _generate_image_for_tag(
+                        best_answer, explanation, image_url, all_paths, image_meta = _generate_image_for_tag(
                             definition, rendered_prompt, images_dir, images_rel,
                             i, out_col, session_key, project_id, tagged_path,
                             row_data=all_context, naming_column=naming_column, image_format=image_format,
@@ -1402,28 +1499,47 @@ def row_by_row_tagger(session_key, csv_path, config_path, input_columns,
                 live_entry = dict(log_entry)
                 live_entry["image_url"] = image_url
                 live_entry["image_urls"] = image_urls
+                live_entry["image_meta"] = image_meta
                 live = PROGRESS_STATUS[session_key]["live_logs"]
                 live.append(live_entry)
                 if len(live) > 100:
                     live.pop(0)
 
-                # Pause check (after each tag, not just each row)
+                # Pause check (after each tag, not just each row). Also bails
+                # out immediately if the project was deleted out from under
+                # this (possibly paused) thread — CANCEL_FLAGS is what wakes
+                # it up in that case, since PAUSE_FLAGS alone would leave it
+                # sleeping forever.
                 was_paused = False
-                while PAUSE_FLAGS.get(session_key, False):
+                while PAUSE_FLAGS.get(session_key, False) and not CANCEL_FLAGS.get(session_key, False):
                     if not was_paused:
                         PROGRESS_STATUS[session_key]['status'] = 'paused'
                         if project_id:
                             update_project(project_id, status='paused', done_rows=i)
                         was_paused = True
                     time.sleep(0.5)
-                if was_paused:
+                if was_paused and not CANCEL_FLAGS.get(session_key, False):
                     if project_id:
                         update_project(project_id, status='running')
+
+                if CANCEL_FLAGS.get(session_key, False):
+                    break
+
+            if CANCEL_FLAGS.get(session_key, False):
+                break
 
             df.to_csv(tagged_path, index=False)
             PROGRESS_STATUS[session_key]["done"]        = i + 1
             PROGRESS_STATUS[session_key]["status"]      = f"Processing row {i + 1}/{total_rows}"
             PROGRESS_STATUS[session_key]["last_update"] = time.time()
+
+        if CANCEL_FLAGS.pop(session_key, False):
+            # Project was deleted while this thread was running/paused — its
+            # files are gone, so don't touch disk again, just mark it done.
+            PAUSE_FLAGS.pop(session_key, None)
+            PROGRESS_STATUS[session_key]["status"]      = "cancelled"
+            PROGRESS_STATUS[session_key]["last_update"] = time.time()
+            return
 
         df.to_csv(tagged_path, index=False)
         PROGRESS_STATUS[session_key]["status"]      = "finished"

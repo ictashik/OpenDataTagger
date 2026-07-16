@@ -46,6 +46,9 @@ from .utils import (
     get_downloaded_image_loras,
     start_image_lora_download,
     get_image_schedulers,
+    get_image_server_health,
+    get_disk_usage,
+    summarize_image_run_settings,
     get_aspect_ratio_presets,
     load_style_presets,
     render_tag_prompt,
@@ -219,6 +222,12 @@ def upload_file_view(request):
             request.session['config_filepath'] = config_path
             request.session['project_mode']    = mode
             request.session['project_id']      = project_id
+            # A brand-new upload must never resume a previous project's
+            # tagging run — without this, tagging_view's "monitor-only"
+            # branch would find the old (possibly paused/deleted) session
+            # still alive in PROGRESS_STATUS and reattach to it instead of
+            # starting a fresh run for this project.
+            request.session.pop('tagging_session_key', None)
 
             save_project(
                 project_id=project_id,
@@ -405,14 +414,23 @@ def tagging_view(request):
     if not csv_path:
         return redirect('upload_file')
 
-    # Monitor-only mode: if there's already an active session, just render the UI
+    mode        = _project_mode(request)
+    config_data = load_config_file(config_path) if config_path else []
+    context     = {'mode': mode}
+    if mode == 'image':
+        context['run_info'] = summarize_image_run_settings(config_data, get_active_image_connection())
+
+    # Monitor-only mode: if there's already an active session for THIS
+    # project, just render the UI. The project_id check matters — a stale
+    # tagging_session_key left over from a different (e.g. deleted) project
+    # must never be reattached to here, or the page would show that other
+    # project's stale/broken progress instead of starting a fresh run.
     if existing_key and existing_key in PROGRESS_STATUS:
         ps = PROGRESS_STATUS[existing_key]
-        if ps['status'] not in ('finished',) and not ps['status'].startswith('error'):
-            return render(request, 'tagging.html', {'mode': _project_mode(request)})
+        same_project = ps.get('project_id') == project_id
+        if same_project and ps['status'] not in ('finished', 'cancelled') and not ps['status'].startswith('error'):
+            return render(request, 'tagging.html', context)
 
-    config_data = load_config_file(config_path) if config_path else []
-    mode        = _project_mode(request)
     session_key = str(uuid.uuid4())
     request.session['tagging_session_key'] = session_key
 
@@ -424,7 +442,23 @@ def tagging_view(request):
     )
     t.start()
 
-    return render(request, 'tagging.html', {'mode': mode})
+    return render(request, 'tagging.html', context)
+
+
+def tagging_image_status_view(request):
+    """Live SD-server + disk status for the tagging page's status panel
+    (image mode only) — polled independently of the progress endpoint since
+    it hits the SD server and disk, and shouldn't slow down the 1s progress
+    poll or run on every other page's sidebar."""
+    health = get_image_server_health()
+    disk   = get_disk_usage()
+    return JsonResponse({
+        'loaded_model': health.get('loaded_model') or '',
+        'server_reachable': bool(health),
+        'disk_free_human':   disk['free_human']   if disk else None,
+        'disk_total_human':  disk['total_human']  if disk else None,
+        'disk_percent_free': disk['percent_free'] if disk else None,
+    })
 
 
 def tagging_progress_view(request):
