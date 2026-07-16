@@ -56,6 +56,23 @@ def health():
     return {"status": "ok", "loaded_model": model_mgr.get_loaded_model()}
 
 
+@app.get("/status")
+def status():
+    """Live activity — what the server is doing right now (loading weights,
+    loading a LoRA, generating step N/M, idle) plus a short recent-events
+    log, so a caller polling this can show real progress instead of a
+    black box while /generate is in flight."""
+    return model_mgr.get_status()
+
+
+@app.post("/cancel")
+def cancel():
+    """Best-effort: interrupts an in-flight generation. See
+    models.request_cancel for what this can and can't stop."""
+    model_mgr.request_cancel()
+    return {"cancelled": True}
+
+
 @app.get("/capability")
 def capability():
     return detect_capability()

@@ -279,6 +279,28 @@ def get_image_server_health(timeout=4):
         return {}
 
 
+def get_image_server_status(timeout=4):
+    """Live activity feed from the SD server — current state (loading
+    weights / loading LoRA / generating step N/M / idle) plus recent log
+    lines, so a stuck or slow /generate call isn't a silent black box on
+    the tagging page. Returns {} if the server is unreachable."""
+    try:
+        return _sd_request('/status', timeout=timeout)
+    except Exception:
+        return {}
+
+
+def request_image_generation_cancel(timeout=4):
+    """Best-effort: ask the SD server to interrupt whatever it's doing right
+    now. See sd_server's models.request_cancel for what this can and can't
+    stop (an in-flight denoising loop, yes; a from_pretrained() weight load
+    already in progress, no — that has no cooperative interrupt point)."""
+    try:
+        _sd_request('/cancel', {}, method='POST', timeout=timeout)
+    except Exception:
+        pass
+
+
 def _human_bytes(n):
     n = float(n)
     for unit in ('B', 'KB', 'MB', 'GB', 'TB'):
@@ -1534,11 +1556,16 @@ def row_by_row_tagger(session_key, csv_path, config_path, input_columns,
             PROGRESS_STATUS[session_key]["last_update"] = time.time()
 
         if CANCEL_FLAGS.pop(session_key, False):
-            # Project was deleted while this thread was running/paused — its
-            # files are gone, so don't touch disk again, just mark it done.
+            # Either the project was deleted (its files are gone — don't
+            # touch disk again) or the user hit Stop (project still exists,
+            # but every completed row up to here was already flushed to
+            # tagged_path by the per-row save above, so there's nothing left
+            # to write). Either way, just record where it stopped.
             PAUSE_FLAGS.pop(session_key, None)
             PROGRESS_STATUS[session_key]["status"]      = "cancelled"
             PROGRESS_STATUS[session_key]["last_update"] = time.time()
+            if project_id:
+                update_project(project_id, status='cancelled', done_rows=PROGRESS_STATUS[session_key]["done"])
             return
 
         df.to_csv(tagged_path, index=False)

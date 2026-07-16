@@ -86,9 +86,26 @@
             class="px-4 py-1.5 rounded-md border border-gray-600 text-sm text-gray-300 hover:bg-gray-700 transition hidden">
             Pause
         </button>
+        <button id="stop-btn" onclick="stopTagging()"
+            class="px-4 py-1.5 rounded-md border border-red-800 text-sm text-red-400 hover:bg-red-900/30 transition hidden">
+            Stop
+        </button>
         <span id="pause-status" class="text-xs text-yellow-400 hidden">Paused — LLM call in progress will finish first</span>
+        <span id="stop-status" class="text-xs text-red-400 hidden">Stopping — waiting for the current call to return…</span>
+        <a id="results-link" href="{% url 'results' %}" class="text-xs text-green-400 hover:text-green-300 hidden">View partial results →</a>
         <a href="{% url 'home' %}" class="ml-auto text-xs text-gray-500 hover:text-gray-300">← Projects</a>
     </div>
+
+    {% if mode == 'image' %}
+    <!-- SD server live activity -->
+    <div class="w-full max-w-4xl mt-3 bg-gray-800/60 border border-gray-700 rounded-lg px-3 py-2 text-xs">
+        <div class="flex items-center gap-2">
+            <span class="text-gray-500 uppercase tracking-wide text-[10px]">Server activity</span>
+            <span id="server-state" class="text-gray-200 font-mono">idle</span>
+        </div>
+        <div id="server-log" class="text-gray-500 font-mono mt-1 truncate">—</div>
+    </div>
+    {% endif %}
 
     <!-- Live log terminal -->
     <div class="w-full max-w-4xl mt-4">
@@ -386,13 +403,24 @@ function poll() {
                 'Elapsed ' + formatDuration(data.elapsed) +
                 (data.status === 'finished' ? '' : ' / Remaining ~' + formatDuration(data.remaining));
 
-            // Show pause button once we know we're running
-            document.getElementById('pause-btn').classList.remove('hidden');
+            var terminal = (data.status === 'finished' || data.status === 'cancelled');
+
+            // Show pause/stop buttons once we know we're running
+            if (!terminal && data.status !== 'stopping') {
+                document.getElementById('pause-btn').classList.remove('hidden');
+                document.getElementById('stop-btn').classList.remove('hidden');
+            }
 
             // Sync pause state
             if (data.paused !== isPaused) {
                 isPaused = data.paused;
                 updatePauseUI();
+            }
+
+            if (data.status === 'stopping') {
+                document.getElementById('stop-status').classList.remove('hidden');
+                document.getElementById('stop-btn').disabled = true;
+                document.getElementById('pause-btn').classList.add('hidden');
             }
 
             if (data.logs && data.logs.length) {
@@ -404,12 +432,36 @@ function poll() {
             if (data.status === 'finished') {
                 document.getElementById('progress-label').textContent = 'Done! Redirecting…';
                 document.getElementById('pause-btn').classList.add('hidden');
+                document.getElementById('stop-btn').classList.add('hidden');
                 setTimeout(function() { window.location.href = "{% url 'results' %}"; }, 800);
+            } else if (data.status === 'cancelled') {
+                document.getElementById('progress-label').textContent =
+                    'Stopped — ' + done + ' of ' + total + ' row(s) completed.';
+                document.getElementById('pause-btn').classList.add('hidden');
+                document.getElementById('stop-btn').classList.add('hidden');
+                document.getElementById('stop-status').classList.add('hidden');
+                document.getElementById('progress-bar').classList.remove('progress-shimmer', 'bg-blue-500');
+                document.getElementById('progress-bar').classList.add('bg-red-500');
+                if (done > 0) document.getElementById('results-link').classList.remove('hidden');
+                // Job didn't run to completion — let the user decide what to do
+                // rather than auto-redirecting like a normal finish.
             } else {
                 setTimeout(poll, data.paused ? 2000 : 1000);
             }
         })
         .catch(function() { setTimeout(poll, 2000); });
+}
+
+function stopTagging() {
+    if (!confirm('Stop this job? Rows already completed stay saved; anything in progress is discarded.')) return;
+    var btn = document.getElementById('stop-btn');
+    btn.disabled = true;
+    fetch("{% url 'stop_tagging' %}", {method: 'POST', headers: {'X-CSRFToken': getCookie('csrftoken')}})
+        .then(function(r) { return r.json(); })
+        .then(function() {
+            document.getElementById('stop-status').classList.remove('hidden');
+            document.getElementById('pause-btn').classList.add('hidden');
+        });
 }
 
 function pollImageStatus() {
@@ -430,6 +482,27 @@ function pollImageStatus() {
                     diskEl.textContent = 'unknown';
                 }
             }
+
+            var stateEl = document.getElementById('server-state');
+            if (stateEl) {
+                if (!data.server_reachable) {
+                    stateEl.textContent = 'unreachable';
+                } else {
+                    var state = data.server_state || 'idle';
+                    var text  = state === 'idle' ? 'idle' : state.replace('_', ' ');
+                    if (data.server_detail) text += ' — ' + data.server_detail;
+                    if (data.server_since) {
+                        var secs = Math.max(0, Math.round(Date.now() / 1000 - data.server_since));
+                        if (state !== 'idle') text += ' (' + secs + 's)';
+                    }
+                    stateEl.textContent = text;
+                }
+            }
+            var logEl = document.getElementById('server-log');
+            if (logEl && data.server_logs && data.server_logs.length) {
+                var last = data.server_logs[data.server_logs.length - 1];
+                logEl.textContent = last.line;
+            }
         })
         .catch(function() {});
 }
@@ -438,7 +511,7 @@ document.addEventListener('DOMContentLoaded', poll);
 if (isImageMode) {
     document.addEventListener('DOMContentLoaded', function() {
         pollImageStatus();
-        setInterval(pollImageStatus, 5000);
+        setInterval(pollImageStatus, 3000);
     });
 }
 </script>

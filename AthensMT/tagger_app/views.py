@@ -18,6 +18,7 @@ from .forms import UploadForm
 from .utils import (
     PROGRESS_STATUS,
     PAUSE_FLAGS,
+    CANCEL_FLAGS,
     row_by_row_tagger,
     load_config_file,
     save_config_file,
@@ -47,6 +48,8 @@ from .utils import (
     start_image_lora_download,
     get_image_schedulers,
     get_image_server_health,
+    get_image_server_status,
+    request_image_generation_cancel,
     get_disk_usage,
     summarize_image_run_settings,
     get_aspect_ratio_presets,
@@ -451,14 +454,43 @@ def tagging_image_status_view(request):
     it hits the SD server and disk, and shouldn't slow down the 1s progress
     poll or run on every other page's sidebar."""
     health = get_image_server_health()
+    status = get_image_server_status()
     disk   = get_disk_usage()
     return JsonResponse({
-        'loaded_model': health.get('loaded_model') or '',
-        'server_reachable': bool(health),
+        'loaded_model':      health.get('loaded_model') or '',
+        'server_reachable':  bool(health),
+        'server_state':      status.get('state', ''),
+        'server_detail':     status.get('detail', ''),
+        'server_since':      status.get('since'),
+        'server_logs':       status.get('logs', []),
         'disk_free_human':   disk['free_human']   if disk else None,
         'disk_total_human':  disk['total_human']  if disk else None,
         'disk_percent_free': disk['percent_free'] if disk else None,
     })
+
+
+def stop_tagging_view(request):
+    """Hard stop, as opposed to pause: cancels the run outright instead of
+    just blocking between tags. Reuses the same CANCEL_FLAGS mechanism
+    delete_project() uses to unstick a paused thread whose project got
+    deleted — here it's the same idea, just user-initiated. Also asks the
+    SD server to interrupt an in-flight generation (best-effort — see
+    request_image_generation_cancel for what it can and can't stop)."""
+    if request.method != 'POST':
+        return JsonResponse({'error': 'POST required.'}, status=400)
+
+    session_key = request.session.get('tagging_session_key')
+    project_id  = request.session.get('project_id')
+    if session_key and session_key in PROGRESS_STATUS:
+        CANCEL_FLAGS[session_key] = True
+        PAUSE_FLAGS[session_key] = False
+        PROGRESS_STATUS[session_key]['status'] = 'stopping'
+        if project_id:
+            update_project(project_id, status='stopping')
+        if _project_mode(request) == 'image':
+            request_image_generation_cancel()
+
+    return JsonResponse({'stopped': True})
 
 
 def tagging_progress_view(request):

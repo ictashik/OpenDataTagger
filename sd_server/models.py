@@ -6,6 +6,7 @@ needed. A module-level lock serialises generation so concurrent requests
 don't fight over the GPU — this matches ODT's row-by-row (sequential)
 tagging loop.
 """
+import collections
 import inspect
 import threading
 import time
@@ -20,6 +21,48 @@ _loaded = {
     "default_scheduler_cls": None,
     "default_scheduler_config": None,
 }
+
+# Live activity status + a short rolling history, so a slow/stuck weight load
+# or generation isn't a silent black box to whatever's polling /status (ODT's
+# tagging page). Guarded by its own lock, separate from _lock (which is held
+# for the full duration of a generate() call) so /status stays responsive
+# while a generation is in flight.
+_status_lock = threading.Lock()
+_status = {"state": "idle", "detail": "", "since": None}
+_log_buffer = collections.deque(maxlen=200)
+_cancel_requested = threading.Event()
+
+
+def _set_status(state, detail=""):
+    with _status_lock:
+        _status["state"] = state
+        _status["detail"] = detail
+        _status["since"] = time.time()
+
+
+def _log(line):
+    with _status_lock:
+        _log_buffer.append({"ts": time.time(), "line": line})
+
+
+def get_status():
+    with _status_lock:
+        return {**_status, "logs": list(_log_buffer)[-50:]}
+
+
+def request_cancel():
+    """Best-effort cancellation. If a denoising loop is running, most
+    diffusers pipelines check `_interrupt` every step and bail out almost
+    immediately. If we're still inside from_pretrained() loading weights,
+    there's no cooperative hook to interrupt that — this only guarantees
+    generate() won't proceed to the denoising loop once loading finishes."""
+    _cancel_requested.set()
+    pipe = _loaded.get("pipe")
+    if pipe is not None:
+        try:
+            pipe._interrupt = True
+        except Exception:
+            pass
 
 # A curated set of well-known schedulers/samplers — the single biggest lever
 # on output quality/speed after steps. "default" leaves whatever the pipeline
@@ -58,6 +101,10 @@ def _load(model_id, token=None):
     from diffusers import AutoPipelineForText2Image
 
     device, dtype = _select_device_dtype()
+    _set_status("loading_model", f"Loading weights for {model_id} ({device})…")
+    _log(f"Loading weights for {model_id} ({device})…")
+    t0 = time.time()
+
     common = dict(torch_dtype=dtype, token=token or None)
     # The safety_checker weights aren't downloaded (see downloader.py), and
     # pipeline classes without one (SDXL/SD3/FLUX) don't accept the kwarg at
@@ -76,6 +123,8 @@ def _load(model_id, token=None):
             # Some repos don't ship safetensors — retry without the flag.
             pipe = AutoPipelineForText2Image.from_pretrained(model_id, **common)
 
+    _log(f"Weights loaded in {time.time() - t0:.1f}s")
+
     if device == "cpu":
         pipe = pipe.to(device)
     else:
@@ -84,12 +133,14 @@ def _load(model_id, token=None):
         # physical RAM, and on Apple Silicon "device" memory is the same
         # unified pool as system RAM, so a plain .to(device) has no headroom
         # to fall back on and gets killed by the OS under memory pressure.
+        _set_status("loading_model", "Preparing sequential CPU offload…")
         pipe.enable_sequential_cpu_offload(device=device)
     for opt in ("enable_attention_slicing", "enable_vae_slicing"):
         try:
             getattr(pipe, opt)()
         except Exception:
             pass
+    _log(f"Model ready: {model_id}")
     return pipe, device
 
 
@@ -99,6 +150,7 @@ def ensure_loaded(model_id, token=None):
 
     # Free the previously-loaded pipeline before loading a new one.
     if _loaded["pipe"] is not None:
+        _log(f"Unloading {_loaded['model_id']} to switch models…")
         _loaded["pipe"] = None
         _loaded["model_id"] = None
         _loaded["lora_ids"] = []  # a fresh pipe has no LoRA attached
@@ -130,6 +182,9 @@ def _ensure_loras(pipe, loras, token=None):
     ids = [l["id"] for l in loras]
 
     if ids != _loaded.get("lora_ids"):
+        if ids:
+            _set_status("loading_lora", f"Loading LoRA(s): {', '.join(ids)}…")
+            _log(f"Loading LoRA(s): {', '.join(ids)}…")
         if _loaded.get("lora_ids"):
             try:
                 pipe.unload_lora_weights()
@@ -138,6 +193,8 @@ def _ensure_loras(pipe, loras, token=None):
         for i, l in enumerate(loras):
             pipe.load_lora_weights(l["id"], adapter_name=f"lora{i}", token=token or None)
         _loaded["lora_ids"] = ids
+        if ids:
+            _log(f"LoRA(s) ready: {', '.join(ids)}")
 
     if loras:
         adapter_names = [f"lora{i}" for i in range(len(loras))]
@@ -168,34 +225,62 @@ def generate(model_id, prompt, negative_prompt="", width=512, height=512,
     import torch
 
     with _lock:
-        pipe = ensure_loaded(model_id, token)
-        _ensure_loras(pipe, loras, token)
-        _ensure_scheduler(pipe, scheduler)
-        device = _loaded["device"]
+        _cancel_requested.clear()
+        try:
+            pipe = ensure_loaded(model_id, token)
+            if _cancel_requested.is_set():
+                raise RuntimeError("Cancelled before generation started")
+            _ensure_loras(pipe, loras, token)
+            _ensure_scheduler(pipe, scheduler)
+            if _cancel_requested.is_set():
+                raise RuntimeError("Cancelled before generation started")
+            device = _loaded["device"]
 
-        if seed is None or int(seed) < 0:
-            seed = int(time.time() * 1000) % (2 ** 32)
-        seed = int(seed)
-        # MPS does not support generator device="mps" for manual_seed reliably.
-        gen_device = "cpu" if device == "mps" else device
-        generator = torch.Generator(device=gen_device).manual_seed(seed)
+            if seed is None or int(seed) < 0:
+                seed = int(time.time() * 1000) % (2 ** 32)
+            seed = int(seed)
+            # MPS does not support generator device="mps" for manual_seed reliably.
+            gen_device = "cpu" if device == "mps" else device
+            generator = torch.Generator(device=gen_device).manual_seed(seed)
 
-        kwargs = {
-            "prompt":                prompt,
-            "negative_prompt":       negative_prompt or None,
-            "width":                 int(width),
-            "height":                int(height),
-            "num_inference_steps":   int(steps),
-            "guidance_scale":        float(guidance_scale),
-            "num_images_per_prompt": int(num_images),
-            "generator":             generator,
-        }
-        # Drop kwargs the specific pipeline doesn't accept (e.g. FLUX has no
-        # negative_prompt; Turbo ignores guidance). Keeps one code path for all.
-        allowed = set(inspect.signature(pipe.__call__).parameters.keys())
-        kwargs = {k: v for k, v in kwargs.items() if k in allowed}
+            kwargs = {
+                "prompt":                prompt,
+                "negative_prompt":       negative_prompt or None,
+                "width":                 int(width),
+                "height":                int(height),
+                "num_inference_steps":   int(steps),
+                "guidance_scale":        float(guidance_scale),
+                "num_images_per_prompt": int(num_images),
+                "generator":             generator,
+            }
+            # Drop kwargs the specific pipeline doesn't accept (e.g. FLUX has
+            # no negative_prompt; Turbo ignores guidance). One code path for all.
+            allowed = set(inspect.signature(pipe.__call__).parameters.keys())
+            kwargs = {k: v for k, v in kwargs.items() if k in allowed}
 
-        start = time.time()
-        result = pipe(**kwargs)
-        elapsed = time.time() - start
-        return result.images, seed, elapsed
+            total_steps = int(steps)
+
+            def _on_step(_pipe, step, _timestep, callback_kwargs):
+                _set_status("generating", f"Step {step + 1}/{total_steps}")
+                return callback_kwargs
+
+            if "callback_on_step_end" in allowed:
+                kwargs["callback_on_step_end"] = _on_step
+                pipe._interrupt = False  # reset — a prior cancel may have left this set
+
+            _set_status("generating", f"Step 0/{total_steps}")
+            _log(f"Generating {num_images} image(s): {width}x{height}, {total_steps} steps, seed {seed}")
+            start = time.time()
+            result = pipe(**kwargs)
+            elapsed = time.time() - start
+
+            if getattr(pipe, "_interrupt", False):
+                raise RuntimeError("Cancelled")
+
+            _log(f"Done in {elapsed:.1f}s")
+            _set_status("idle", "")
+            return result.images, seed, elapsed
+        except Exception as e:
+            _log(f"Error: {e}")
+            _set_status("idle", "")
+            raise
