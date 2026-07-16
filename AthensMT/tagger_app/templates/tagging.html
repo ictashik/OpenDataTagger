@@ -64,6 +64,27 @@
             <div class="text-gray-200 font-mono truncate" id="disk-free">checking…</div>
         </div>
     </div>
+    {% else %}
+    <!-- Loaded model / token stats -->
+    <div class="w-full max-w-4xl mt-4 grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+        <div class="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2">
+            <div class="text-gray-500 uppercase tracking-wide text-[10px]">Loaded model</div>
+            <div class="text-gray-200 font-mono truncate" id="loaded-model">checking…</div>
+        </div>
+        <div class="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2">
+            <div class="text-gray-500 uppercase tracking-wide text-[10px]">Tokens in</div>
+            <div class="text-gray-200 font-mono truncate" id="tokens-in">0</div>
+        </div>
+        <div class="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2">
+            <div class="text-gray-500 uppercase tracking-wide text-[10px]">Tokens out</div>
+            <div class="text-gray-200 font-mono truncate" id="tokens-out">0</div>
+        </div>
+        <div class="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2">
+            <div class="text-gray-500 uppercase tracking-wide text-[10px]">Tok/sec</div>
+            <div class="text-gray-200 font-mono truncate" id="tok-per-sec">—</div>
+        </div>
+    </div>
+    {% endif %}
 
     <!-- Backend system metrics -->
     <div class="w-full max-w-4xl mt-3 grid grid-cols-2 sm:grid-cols-5 gap-3 text-xs">
@@ -88,7 +109,6 @@
             <div class="text-gray-200 font-mono truncate" id="metric-temp">—</div>
         </div>
     </div>
-    {% endif %}
 
     <!-- Progress bar -->
     <div class="w-full max-w-4xl mt-6">
@@ -528,20 +548,50 @@ function pollImageStatus() {
                 logEl.textContent = last.line;
             }
 
-            setMetric('metric-cpu', data.cpu_percent != null ? data.cpu_percent.toFixed(0) + '%' : null, data.cpu_percent, 90);
-            var ramText = (data.ram_used_mb != null && data.ram_total_mb)
-                ? (data.ram_used_mb / 1024).toFixed(1) + ' / ' + (data.ram_total_mb / 1024).toFixed(1) + ' GB'
-                : null;
-            setMetric('metric-ram', ramText, data.ram_percent, 90);
-            setMetric('metric-gpu-util', data.gpu_util_percent != null ? data.gpu_util_percent.toFixed(0) + '%' : 'n/a', data.gpu_util_percent, 95);
-            var vramText = (data.vram_used_mb != null && data.vram_total_mb)
-                ? (data.vram_used_mb / 1024).toFixed(1) + ' / ' + (data.vram_total_mb / 1024).toFixed(1) + ' GB'
-                : (data.vram_used_mb != null ? (data.vram_used_mb / 1024).toFixed(1) + ' GB used' : 'n/a');
-            var vramPct = (data.vram_used_mb != null && data.vram_total_mb) ? (data.vram_used_mb / data.vram_total_mb * 100) : null;
-            setMetric('metric-vram', vramText, vramPct, 90);
-            setMetric('metric-temp', data.gpu_temp_c != null ? data.gpu_temp_c.toFixed(0) + '°C' : 'n/a', data.gpu_temp_c, 85);
+            renderSystemMetrics(data);
         })
         .catch(function() {});
+}
+
+function pollTextStatus() {
+    fetch("{% url 'tagging_llm_status' %}")
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            var loadedEl = document.getElementById('loaded-model');
+            if (loadedEl) {
+                loadedEl.textContent = data.server_reachable ? (data.loaded_model || '—') : 'server unreachable';
+            }
+            var tokensInEl = document.getElementById('tokens-in');
+            if (tokensInEl) tokensInEl.textContent = (data.prompt_tokens || 0).toLocaleString();
+            var tokensOutEl = document.getElementById('tokens-out');
+            if (tokensOutEl) tokensOutEl.textContent = (data.completion_tokens || 0).toLocaleString();
+            var tokPerSecEl = document.getElementById('tok-per-sec');
+            if (tokPerSecEl) {
+                var tps = (data.llm_time_sec > 0) ? (data.completion_tokens / data.llm_time_sec) : null;
+                tokPerSecEl.textContent = tps != null ? tps.toFixed(1) : '—';
+            }
+
+            renderSystemMetrics(data);
+        })
+        .catch(function() {});
+}
+
+// Renders the shared CPU/RAM/GPU-util/VRAM/temp badges — used by both the
+// image (SD server) and text (Ollama) status panels, which report the same
+// metric shape from get_image_server_metrics().
+function renderSystemMetrics(data) {
+    setMetric('metric-cpu', data.cpu_percent != null ? data.cpu_percent.toFixed(0) + '%' : null, data.cpu_percent, 90);
+    var ramText = (data.ram_used_mb != null && data.ram_total_mb)
+        ? (data.ram_used_mb / 1024).toFixed(1) + ' / ' + (data.ram_total_mb / 1024).toFixed(1) + ' GB'
+        : null;
+    setMetric('metric-ram', ramText, data.ram_percent, 90);
+    setMetric('metric-gpu-util', data.gpu_util_percent != null ? data.gpu_util_percent.toFixed(0) + '%' : 'n/a', data.gpu_util_percent, 95);
+    var vramText = (data.vram_used_mb != null && data.vram_total_mb)
+        ? (data.vram_used_mb / 1024).toFixed(1) + ' / ' + (data.vram_total_mb / 1024).toFixed(1) + ' GB'
+        : (data.vram_used_mb != null ? (data.vram_used_mb / 1024).toFixed(1) + ' GB used' : 'n/a');
+    var vramPct = (data.vram_used_mb != null && data.vram_total_mb) ? (data.vram_used_mb / data.vram_total_mb * 100) : null;
+    setMetric('metric-vram', vramText, vramPct, 90);
+    setMetric('metric-temp', data.gpu_temp_c != null ? data.gpu_temp_c.toFixed(0) + '°C' : 'n/a', data.gpu_temp_c, 85);
 }
 
 // Renders a metric badge and flags it red once it crosses `warnAt` — null
@@ -556,11 +606,10 @@ function setMetric(id, text, value, warnAt) {
 }
 
 document.addEventListener('DOMContentLoaded', poll);
-if (isImageMode) {
-    document.addEventListener('DOMContentLoaded', function() {
-        pollImageStatus();
-        setInterval(pollImageStatus, 3000);
-    });
-}
+document.addEventListener('DOMContentLoaded', function() {
+    var statusFn = isImageMode ? pollImageStatus : pollTextStatus;
+    statusFn();
+    setInterval(statusFn, 3000);
+});
 </script>
 {% endblock %}

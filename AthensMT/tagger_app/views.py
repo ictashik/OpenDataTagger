@@ -25,6 +25,7 @@ from .utils import (
     LLM_CACHE_KEYS,
     IMAGE_CACHE_KEYS,
     get_active_connection,
+    get_llm_server_status,
     load_connections,
     save_connection,
     load_projects,
@@ -488,6 +489,39 @@ def tagging_image_status_view(request):
     })
 
 
+def tagging_llm_status_view(request):
+    """Live Ollama-loaded-model + system status for the tagging page's status
+    panel (text mode) — mirrors tagging_image_status_view. CPU/RAM/GPU numbers
+    reuse the SD server's /metrics endpoint (the only live system-metrics
+    source this app has), same as image mode shows."""
+    session_key = request.session.get('tagging_session_key')
+    progress    = PROGRESS_STATUS.get(session_key, {})
+
+    status  = get_llm_server_status()
+    models  = status.get('models', []) if status else []
+    loaded  = models[0] if models else {}
+    metrics = get_image_server_metrics()
+    gpu     = metrics.get('gpu', {})
+
+    return JsonResponse({
+        'server_reachable':  bool(status),
+        'loaded_model':      loaded.get('name') or loaded.get('model') or '',
+        'model_size_mb':     round(loaded['size'] / (1024 * 1024))      if loaded.get('size')      else None,
+        'model_vram_mb':     round(loaded['size_vram'] / (1024 * 1024)) if loaded.get('size_vram') else None,
+        'prompt_tokens':     progress.get('prompt_tokens', 0),
+        'completion_tokens': progress.get('completion_tokens', 0),
+        'llm_time_sec':      progress.get('llm_time_sec', 0.0),
+        'cpu_percent':       metrics.get('cpu_percent'),
+        'ram_used_mb':       metrics.get('ram_used_mb'),
+        'ram_total_mb':      metrics.get('ram_total_mb'),
+        'ram_percent':       metrics.get('ram_percent'),
+        'gpu_util_percent':  gpu.get('utilization_percent'),
+        'vram_used_mb':      gpu.get('vram_used_mb'),
+        'vram_total_mb':     gpu.get('vram_total_mb'),
+        'gpu_temp_c':        gpu.get('temperature_c'),
+    })
+
+
 def stop_tagging_view(request):
     """Hard stop, as opposed to pause: cancels the run outright instead of
     just blocking between tags. Reuses the same CANCEL_FLAGS mechanism
@@ -540,6 +574,9 @@ def tagging_progress_view(request):
         "files_saved": files_saved,
         "elapsed":     elapsed,
         "remaining":   remaining,
+        "prompt_tokens":     progress_data.get("prompt_tokens", 0),
+        "completion_tokens": progress_data.get("completion_tokens", 0),
+        "llm_time_sec":      progress_data.get("llm_time_sec", 0.0),
     })
 
 

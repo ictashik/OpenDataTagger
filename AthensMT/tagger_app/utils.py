@@ -145,6 +145,21 @@ def get_llm_client():
     return client, conn['model']
 
 
+def get_llm_server_status(timeout=4):
+    """Live Ollama status — which model is actually resident in memory right
+    now (native /api/ps, not the OpenAI-compat /v1 surface used for tagging
+    calls), for the tagging page's status panel (text mode). Returns {} if
+    the host is unreachable rather than raising, since this backs a display."""
+    conn = get_active_connection()
+    url = f"http://{conn['host']}:{conn['port']}/api/ps"
+    try:
+        req = urllib.request.Request(url)
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode('utf-8'))
+    except Exception:
+        return {}
+
+
 # ─── Image backend (Stable Diffusion server) ─────────────────────────────────
 #
 # Mirrors the LLM connection layer above, but points at the standalone SD server
@@ -1390,6 +1405,9 @@ def row_by_row_tagger(session_key, csv_path, config_path, input_columns,
             "last_update": time.time(),
             "live_logs":   [],
             "project_id":  project_id,
+            "prompt_tokens":     0,
+            "completion_tokens": 0,
+            "llm_time_sec":      0.0,
         }
 
         base, ext = os.path.splitext(csv_path)
@@ -1502,6 +1520,10 @@ def row_by_row_tagger(session_key, csv_path, config_path, input_columns,
                             session_key, project_id,
                             usage['prompt_tokens'], usage['completion_tokens'], usage['elapsed_sec'],
                         )
+                        ps = PROGRESS_STATUS[session_key]
+                        ps['prompt_tokens']     += usage['prompt_tokens']
+                        ps['completion_tokens'] += usage['completion_tokens']
+                        ps['llm_time_sec']      += usage['elapsed_sec']
                 else:
                     best_answer = definition.get('DefaultValue', '').strip() or 'N/A'
                     explanation = (
