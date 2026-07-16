@@ -202,10 +202,29 @@ def status(job_id):
 
 
 def downloaded_repo_ids():
-    """Repo ids present in the local Hugging Face cache."""
+    """Repo ids fully present in the local Hugging Face cache.
+
+    scan_cache_dir() lists a repo as soon as it has *any* file snapshotted,
+    which happens the moment the first of many files finishes downloading —
+    not when the whole repo does. snapshot_download() writes each file into
+    blobs/ as "<hash>.incomplete" while streaming and only renames it once
+    that file is done, so a repo is genuinely complete only if no
+    "*.incomplete" blob remains.
+    """
     try:
         from huggingface_hub import scan_cache_dir
         info = scan_cache_dir()
-        return {repo.repo_id for repo in info.repos if repo.repo_type == "model"}
+        result = set()
+        for repo in info.repos:
+            if repo.repo_type != "model":
+                continue
+            blobs_dir = os.path.join(repo.repo_path, "blobs")
+            try:
+                incomplete = any(name.endswith(".incomplete") for name in os.listdir(blobs_dir))
+            except OSError:
+                incomplete = False
+            if not incomplete:
+                result.add(repo.repo_id)
+        return result
     except Exception:
         return set()

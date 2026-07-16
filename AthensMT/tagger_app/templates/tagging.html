@@ -1,6 +1,35 @@
 {% extends "base.html" %}
 
 {% block content %}
+<style>
+@keyframes blink-cursor {
+    0%, 49% { opacity: 1; }
+    50%, 100% { opacity: 0; }
+}
+.stream-cursor {
+    display: inline-block;
+    animation: blink-cursor 0.9s step-start infinite;
+    color: #4ade80;
+    margin-left: 1px;
+}
+#main-heading {
+    transition: opacity 0.3s ease-in-out;
+}
+@keyframes shimmer-move {
+    0% { background-position: 0 0; }
+    100% { background-position: 32px 0; }
+}
+.progress-shimmer {
+    background-image: repeating-linear-gradient(45deg, rgba(255,255,255,0.18) 0, rgba(255,255,255,0.18) 8px, transparent 8px, transparent 16px);
+    background-size: 32px 32px;
+    animation: shimmer-move 0.8s linear infinite;
+}
+@keyframes pulse-dot {
+    0%, 100% { opacity: 0.25; }
+    50% { opacity: 1; }
+}
+.pulse-dot { animation: pulse-dot 1.4s ease-in-out infinite; }
+</style>
 <div class="flex flex-col items-center justify-center min-h-screen bg-gray-900 text-white px-4">
 
     <div class="w-full max-w-4xl text-center">
@@ -8,7 +37,7 @@
         <h1 class="text-3xl font-bold text-blue-400">Image Generation in Progress</h1>
         <p class="text-gray-400 text-sm mt-1">Generating an image for each row with Stable Diffusion.</p>
         {% else %}
-        <h1 class="text-3xl font-bold text-blue-400">AI Tagging in Progress</h1>
+        <h1 id="main-heading" class="text-3xl font-bold text-blue-400">AI Tagging in Progress</h1>
         <p class="text-gray-400 text-sm mt-1">Analysing data row by row and generating AI-assisted outputs.</p>
         {% endif %}
     </div>
@@ -19,8 +48,8 @@
             <span id="progress-label">Initialising…</span>
             <span id="progress-pct">0%</span>
         </div>
-        <div class="w-full bg-gray-700 rounded-full h-3">
-            <div id="progress-bar" class="bg-blue-500 h-3 rounded-full transition-all duration-300" style="width:0%"></div>
+        <div class="w-full bg-gray-700 rounded-full h-3 overflow-hidden">
+            <div id="progress-bar" class="bg-blue-500 h-3 rounded-full transition-all duration-300 progress-shimmer" style="width:0%"></div>
         </div>
         <div class="flex justify-between text-xs text-gray-500 mt-1">
             <span id="progress-time"></span>
@@ -46,6 +75,10 @@
         <div id="log-box"
              class="h-96 overflow-y-auto bg-black rounded-lg border border-gray-700 p-3 font-mono text-xs space-y-2">
             <p id="log-empty" class="text-gray-600">Awaiting first result…</p>
+            <div id="live-indicator" class="flex items-center gap-2 text-gray-600 pt-1">
+                <span class="stream-cursor">▋</span>
+                <span class="pulse-dot">Waiting for next result…</span>
+            </div>
         </div>
     </div>
 </div>
@@ -53,39 +86,135 @@
 <script>
 var logsSeen = 0;
 var isPaused = false;
+var avgRowTimeMs = 0;
+var isImageMode = "{% if mode == 'image' %}1{% else %}0{% endif %}" === "1";
+
+var loadingPhrases = [
+    "Tagging away…", "Synthesizing…", "Odt-ing…", "Labeling the untagged…", "Cooking up tags…",
+    "Annotating…", "Minting synthetic data…", "Stitching context together…", "Threading the columns…",
+    "Conjuring tags…", "Chewing through rows…", "Data-wrangling…", "Percolating tags…",
+    "Fabricating (the good kind)…", "Weaving the dataset…", "Tag-smithing…", "Rows in, tags out…",
+    "Distilling context…", "Manufacturing insight…", "Loom-ing over the data…"
+];
+var phraseIndex = -1;
+
+function cyclePhrase() {
+    var el = document.getElementById('main-heading');
+    if (!el) return;
+    el.style.opacity = 0;
+    setTimeout(function() {
+        phraseIndex = (phraseIndex + 1) % loadingPhrases.length;
+        el.textContent = loadingPhrases[phraseIndex];
+        el.style.opacity = 1;
+    }, 300);
+}
+
+if (!isImageMode) {
+    setInterval(cyclePhrase, 3000);
+}
+
+// Typing speed adapts to the average time the LLM has taken per row so far:
+// slower models get a slower, more deliberate reveal instead of a static dump.
+function typingDuration(text) {
+    var speedFactor = avgRowTimeMs > 0 ? Math.min(Math.max(avgRowTimeMs / 2000, 0.4), 4) : 1;
+    var duration = text.length * 12 * speedFactor;
+    return Math.max(300, Math.min(duration, 6000));
+}
+
+function typeWriter(el, text, totalMs, onDone) {
+    var len = text.length;
+    if (!len) { el.textContent = ''; if (onDone) onDone(); return; }
+    var tick = 25;
+    var steps = Math.max(1, Math.round(totalMs / tick));
+    var perStep = Math.max(1, Math.ceil(len / steps));
+    var i = 0;
+    el.textContent = '';
+    var timer = setInterval(function() {
+        i += perStep;
+        if (i >= len) {
+            el.textContent = text;
+            clearInterval(timer);
+            if (onDone) onDone();
+        } else {
+            el.textContent = text.slice(0, i);
+        }
+    }, tick);
+}
 
 function appendLogs(logs) {
-    var box   = document.getElementById('log-box');
-    var empty = document.getElementById('log-empty');
+    var box       = document.getElementById('log-box');
+    var empty     = document.getElementById('log-empty');
+    var indicator = document.getElementById('live-indicator');
 
     logs.forEach(function(log) {
         if (empty) { empty.remove(); empty = null; }
         var entry = document.createElement('div');
         entry.className = 'border-b border-gray-800 pb-2';
-        var answerLine;
+
+        var header = document.createElement('div');
+        header.innerHTML = '<span class="text-yellow-400 font-bold">[Row ' + log.row_index + '] ' + escHtml(log.column) + '</span>';
+        entry.appendChild(header);
+
+        var promptLine = document.createElement('div');
+        promptLine.className = 'text-gray-400';
+        promptLine.innerHTML = '<b>Prompt:</b> ' + escHtml(log.prompt);
+        entry.appendChild(promptLine);
+
         if (log.image_urls && log.image_urls.length > 1) {
             // Batch grid preview: multiple images from one num_images > 1 call.
-            answerLine = '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;">' +
-                log.image_urls.map(function(url) {
-                    return '<a href="' + escHtml(url) + '" target="_blank">' +
-                        '<img src="' + escHtml(url) + '" alt="generated" ' +
-                        'style="max-height:120px;border-radius:6px;border:1px solid #374151;"></a>';
-                }).join('') + '</div><br>';
+            var grid = document.createElement('div');
+            grid.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;';
+            grid.innerHTML = log.image_urls.map(function(url) {
+                return '<a href="' + escHtml(url) + '" target="_blank">' +
+                    '<img src="' + escHtml(url) + '" alt="generated" ' +
+                    'style="max-height:120px;border-radius:6px;border:1px solid #374151;"></a>';
+            }).join('');
+            entry.appendChild(grid);
         } else if (log.image_url) {
-            answerLine =
-                '<a href="' + escHtml(log.image_url) + '" target="_blank">' +
+            var imgWrap = document.createElement('div');
+            imgWrap.innerHTML = '<a href="' + escHtml(log.image_url) + '" target="_blank">' +
                 '<img src="' + escHtml(log.image_url) + '" alt="generated" ' +
-                'style="max-height:180px;border-radius:6px;margin-top:4px;border:1px solid #374151;"></a><br>';
+                'style="max-height:180px;border-radius:6px;margin-top:4px;border:1px solid #374151;"></a>';
+            entry.appendChild(imgWrap);
         } else {
-            answerLine =
-                '<span class="text-green-400"><b>Answer:</b> ' + escHtml(log.best_answer) + '</span><br>';
+            var answerLine = document.createElement('div');
+            answerLine.className = 'text-green-400';
+            var answerLabel = document.createElement('b');
+            answerLabel.textContent = 'Answer: ';
+            var answerText = document.createElement('span');
+            var cursor1 = document.createElement('span');
+            cursor1.className = 'stream-cursor';
+            cursor1.textContent = '▋';
+            answerLine.appendChild(answerLabel);
+            answerLine.appendChild(answerText);
+            answerLine.appendChild(cursor1);
+            entry.appendChild(answerLine);
+
+            var explanationLine = document.createElement('div');
+            explanationLine.className = 'text-blue-400';
+            var explLabel = document.createElement('i');
+            explLabel.textContent = 'Explanation: ';
+            var explText = document.createElement('span');
+            var cursor2 = document.createElement('span');
+            cursor2.className = 'stream-cursor hidden';
+            cursor2.textContent = '▋';
+            explanationLine.appendChild(explLabel);
+            explanationLine.appendChild(explText);
+            explanationLine.appendChild(cursor2);
+            entry.appendChild(explanationLine);
+
+            var answerStr = String(log.best_answer);
+            var explStr   = String(log.explanation);
+            typeWriter(answerText, answerStr, typingDuration(answerStr), function() {
+                cursor1.classList.add('hidden');
+                cursor2.classList.remove('hidden');
+                typeWriter(explText, explStr, typingDuration(explStr), function() {
+                    cursor2.classList.add('hidden');
+                });
+            });
         }
-        entry.innerHTML =
-            '<span class="text-yellow-400 font-bold">[Row ' + log.row_index + '] ' + escHtml(log.column) + '</span><br>' +
-            '<span class="text-gray-400"><b>Prompt:</b> '      + escHtml(log.prompt)      + '</span><br>' +
-            answerLine +
-            '<span class="text-blue-400"><i>Explanation:</i> ' + escHtml(log.explanation) + '</span>';
-        box.appendChild(entry);
+
+        box.insertBefore(entry, indicator);
     });
     if (logs.length) box.scrollTop = box.scrollHeight;
 }
@@ -146,6 +275,10 @@ function poll() {
             var done  = data.done  || 0;
             var total = data.total || 0;
             var pct   = total > 0 ? Math.round((done / total) * 100) : 0;
+
+            if (done > 0 && data.elapsed) {
+                avgRowTimeMs = (data.elapsed / done) * 1000;
+            }
 
             document.getElementById('progress-bar').style.width = pct + '%';
             document.getElementById('progress-pct').textContent  = pct + '%';
