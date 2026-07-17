@@ -17,8 +17,11 @@
     var listBtn      = document.getElementById('view-list-btn');
     var graphBtn     = document.getElementById('view-graph-btn');
     var toolbar      = document.getElementById('graph-toolbar');
-    var pageWrap     = document.getElementById('page-wrap');
     var zoomPct      = document.getElementById('zoom-pct');
+    var tagsCard     = document.getElementById('tags-card');
+    var pageHeading  = document.getElementById('page-heading');
+    var globalContextCard = document.getElementById('global-context-card');
+    var imageSettingsCard = document.getElementById('image-settings-card');
     if (!tagViewport || !tagContainer || !listBtn || !graphBtn) return;
 
     var graphActive = false;
@@ -147,13 +150,17 @@
         }
     });
 
-    /* ═══ Node dragging (via the "Step N" badge handle) ════════════════ */
+    /* ═══ Node dragging — anywhere on the card's own background starts a
+       drag (not just the small "Step N" badge, which alone is too small
+       and mostly crowded out by the output-column input anyway). Every
+       actual control (inputs, buttons, selects, labels/chips, pins) is
+       excluded so normal interaction is untouched. ═══ */
+    var NODE_DRAG_EXCLUDE = 'input, button, textarea, select, a, label, .node-pin';
     tagContainer.addEventListener('mousedown', function (e) {
         if (!graphActive) return;
-        var badge = e.target.closest('.card-badge');
-        if (!badge) return;
-        var card = badge.closest('.tag-card');
+        var card = e.target.closest('.tag-card');
         if (!card) return;
+        if (e.target.closest(NODE_DRAG_EXCLUDE)) return;
         e.preventDefault();
         e.stopPropagation();
         var startX = e.clientX, startY = e.clientY;
@@ -593,10 +600,13 @@
         if (toolbar) toolbar.classList.toggle('active', graphActive);
         listBtn.classList.toggle('active', !graphActive);
         graphBtn.classList.toggle('active', graphActive);
-        if (pageWrap) {
-            pageWrap.classList.toggle('max-w-4xl', !graphActive);
-            pageWrap.classList.toggle('max-w-6xl', graphActive);
-        }
+        // Graph mode takes over the whole content area: the heading and the
+        // Global Context card (redundant with the source node's pins) hide,
+        // and the tags card becomes a fixed full-screen overlay (CSS above).
+        if (tagsCard) tagsCard.classList.toggle('gv-fullscreen', graphActive);
+        if (pageHeading) pageHeading.style.display = graphActive ? 'none' : '';
+        if (globalContextCard) globalContextCard.style.display = graphActive ? 'none' : '';
+        if (imageSettingsCard) imageSettingsCard.style.display = graphActive ? 'none' : '';
         if (graphActive) {
             initNodePositions();
             applyCanvasTransform();

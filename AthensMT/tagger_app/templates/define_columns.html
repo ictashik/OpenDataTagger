@@ -26,6 +26,16 @@
         .graph-toolbar-btn { background: #1f2937; border-color: #4b5563; color: #d1d5db; }
     }
 
+    /* Graph mode takes over the whole content area: the heading and the
+       (redundant — the source node already shows this) Global Context card
+       are hidden, and the tags card becomes a fixed full-screen overlay
+       with the canvas filling all remaining space via flex. */
+    #tags-card.gv-fullscreen {
+        position: fixed; top: 1.25rem; left: calc(16rem + 1.25rem); right: 1.25rem; bottom: 3rem;
+        z-index: 40; margin: 0; display: flex; flex-direction: column; overflow: hidden;
+    }
+    #tags-card.gv-fullscreen #tag-viewport { flex: 1 1 auto; min-height: 0; }
+
     #tag-viewport { position: relative; }
     #tag-viewport.graph-active {
         overflow: hidden; height: 70vh; min-height: 480px;
@@ -51,7 +61,16 @@
         position: absolute; left: var(--nx, 0px); top: var(--ny, 0px);
         width: 420px; margin: 0; max-height: 80vh; overflow-y: auto;
     }
-    #tag-container.graph-active .card-badge { cursor: move; }
+    /* The whole card is a drag handle in graph mode (not just the header) —
+       every actual control gets its normal cursor back so it doesn't look
+       draggable where it isn't. */
+    #tag-container.graph-active > .tag-card { cursor: move; }
+    #tag-container.graph-active > .tag-card input,
+    #tag-container.graph-active > .tag-card textarea { cursor: text; }
+    #tag-container.graph-active > .tag-card select,
+    #tag-container.graph-active > .tag-card button,
+    #tag-container.graph-active > .tag-card label,
+    #tag-container.graph-active > .tag-card input[type="checkbox"] { cursor: pointer; }
     .tag-card { position: relative; z-index: 1; }
     #tag-container.graph-active > .tag-card.dragging-node {
         z-index: 5; cursor: grabbing;
@@ -123,7 +142,7 @@
 </style>
 <div class="max-w-4xl mx-auto py-8 space-y-6" id="page-wrap">
 
-    <div>
+    <div id="page-heading">
         <h1 class="text-2xl font-semibold text-gray-900 dark:text-gray-100">Define Columns</h1>
         <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">
             Choose which columns give the AI context, then define what it should tag or generate.
@@ -134,7 +153,7 @@
         {% csrf_token %}
 
         <!-- ── Step 1: Global Input Context ── -->
-        <div class="bg-white dark:bg-gray-800 rounded-lg shadow p-6">
+        <div class="bg-white dark:bg-gray-800 rounded-lg shadow p-6" id="global-context-card">
             <div class="flex items-center justify-between mb-1">
                 <h2 class="text-base font-semibold text-gray-800 dark:text-gray-100">1. Global Context Columns</h2>
                 <div class="flex gap-2 text-xs">
@@ -170,7 +189,7 @@
 
         {% if mode == 'image' %}
         <!-- ── Step 2: Image Output Settings ── -->
-        <div class="bg-white dark:bg-gray-800 rounded-lg shadow p-6">
+        <div class="bg-white dark:bg-gray-800 rounded-lg shadow p-6" id="image-settings-card">
             <h2 class="text-base font-semibold text-gray-800 dark:text-gray-100 mb-1">2. Image Output Settings</h2>
             <p class="text-xs text-gray-500 dark:text-gray-400 mb-4">
                 Controls how generated image files are named and saved for this project.
@@ -206,7 +225,7 @@
         {% endif %}
 
         <!-- ── Step 3: Output Tag Definitions ── -->
-        <div class="bg-white dark:bg-gray-800 rounded-lg shadow p-6 space-y-4">
+        <div class="bg-white dark:bg-gray-800 rounded-lg shadow p-6 space-y-4" id="tags-card">
             <div class="flex items-start justify-between">
                 <div>
                     <h2 class="text-base font-semibold text-gray-800 dark:text-gray-100">2. Output Tags &amp; Prompts</h2>
@@ -234,7 +253,7 @@
                 <button type="button" id="zoom-in-btn" class="graph-toolbar-btn" title="Zoom in">+</button>
                 <button type="button" id="fit-view-btn" class="graph-toolbar-btn">Fit view</button>
                 <span class="text-xs text-gray-400 dark:text-gray-500 ml-2">
-                    Drag empty space to pan · scroll to zoom · drag a node's "Step" badge to move it ·
+                    Drag empty space to pan · scroll to zoom · drag a node's header to move it ·
                     drag from a pin to wire a connection
                 </span>
             </div>
@@ -257,7 +276,7 @@
                     <div class="node-pin cond-socket" title="Condition column — drag a wire here to set the condition"></div>
                     <div class="node-pin out-pin" title="Output column"></div>
                     <!-- Card header -->
-                    <div class="flex items-center gap-3 px-4 py-3 border-b border-gray-200 dark:border-gray-700">
+                    <div class="node-header flex items-center gap-3 px-4 py-3 border-b border-gray-200 dark:border-gray-700">
                         <span class="card-badge flex-shrink-0 text-xs font-mono text-indigo-400 bg-indigo-50 dark:bg-indigo-900/30 border border-indigo-200 dark:border-indigo-700 px-2 py-0.5 rounded">Step</span>
                         <input type="text" name="output_column"
                             class="flex-1 px-3 py-1.5 rounded-md border border-gray-300 dark:border-gray-600
@@ -355,7 +374,7 @@
                     <div class="node-pin ctx-socket" title="Context columns — drag a wire here to add a column"></div>
                     <div class="node-pin cond-socket" title="Condition column — drag a wire here to set the condition"></div>
                     <div class="node-pin out-pin" title="Output column"></div>
-                    <div class="flex items-center gap-3 px-4 py-3 border-b border-gray-200 dark:border-gray-700">
+                    <div class="node-header flex items-center gap-3 px-4 py-3 border-b border-gray-200 dark:border-gray-700">
                         <span class="card-badge flex-shrink-0 text-xs font-mono text-indigo-400 bg-indigo-50 dark:bg-indigo-900/30 border border-indigo-200 dark:border-indigo-700 px-2 py-0.5 rounded">Step</span>
                         <input type="text" name="output_column"
                             class="flex-1 px-3 py-1.5 rounded-md border border-gray-300 dark:border-gray-600
@@ -622,7 +641,7 @@ function makeTagCard() {
     h += '<div class="node-pin ctx-socket" title="Context columns — drag a wire here to add a column"></div>';
     h += '<div class="node-pin cond-socket" title="Condition column — drag a wire here to set the condition"></div>';
     h += '<div class="node-pin out-pin" title="Output column"></div>';
-    h += '<div class="flex items-center gap-3 px-4 py-3 border-b border-gray-200 dark:border-gray-700">';
+    h += '<div class="node-header flex items-center gap-3 px-4 py-3 border-b border-gray-200 dark:border-gray-700">';
     h += '  <span class="card-badge flex-shrink-0 text-xs font-mono text-indigo-400 bg-indigo-50 dark:bg-indigo-900/30 border border-indigo-200 dark:border-indigo-700 px-2 py-0.5 rounded">Step</span>';
     h += '  <input type="text" name="output_column" class="flex-1 px-3 py-1.5 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-indigo-500" placeholder="output_column_name" required>';
     h += '  <button type="button" class="remove-btn text-xs text-red-400 hover:text-red-600 font-medium px-2">Remove</button>';
