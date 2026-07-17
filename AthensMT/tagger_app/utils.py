@@ -1,6 +1,7 @@
 import threading
 import openai
 import pandas as pd
+import numpy as np
 import os
 import re
 import shutil
@@ -45,6 +46,7 @@ _DEFAULT_CONNECTION = {
     'host': '10.60.23.102',
     'port': '11434',
     'model': 'gemma3:27b',
+    'embedding_model': '',
 }
 
 # Fallback SD server if image_connections.csv is empty (local server on localhost).
@@ -115,13 +117,20 @@ def load_connections():
         if not {'host', 'port', 'model', 'last_used'}.issubset(df.columns):
             return []
         df['port'] = df['port'].astype(str)
+        # Embedding model (for retrieval/grounding) — older registries predate
+        # this column; default it to '' rather than treating the file as
+        # unreadable, same pattern as the project-mode column below.
+        if 'embedding_model' in df.columns:
+            df['embedding_model'] = df['embedding_model'].fillna('').astype(str)
+        else:
+            df['embedding_model'] = ''
         return df.sort_values('last_used', ascending=False).to_dict('records')
     except Exception as e:
         print(f"Error loading connections: {e}")
         return []
 
 
-def save_connection(host, port, model):
+def save_connection(host, port, model, embedding_model=''):
     path = os.path.normpath(CONNECTIONS_CSV)
     connections = load_connections()
     port = str(port)
@@ -131,8 +140,10 @@ def save_connection(host, port, model):
     )
     if existing:
         existing['last_used'] = datetime.now().isoformat()
+        existing['embedding_model'] = embedding_model
     else:
         connections.insert(0, {'host': host, 'port': port, 'model': model,
+                               'embedding_model': embedding_model,
                                'last_used': datetime.now().isoformat()})
     connections.sort(key=lambda x: x['last_used'], reverse=True)
     pd.DataFrame(connections).to_csv(path, index=False)
@@ -163,6 +174,20 @@ def get_llm_server_status(timeout=4):
             return json.loads(resp.read().decode('utf-8'))
     except Exception:
         return {}
+
+
+def embed_texts(texts, embedding_model, conn=None, timeout=60):
+    """Batch-embed `texts` via Ollama's native /api/embed endpoint, using the
+    same host/port already configured for tagging — retrieval never talks to
+    a separate service. Returns a list of float vectors, one per input text."""
+    conn = conn or get_active_connection()
+    url = f"http://{conn['host']}:{conn['port']}/api/embed"
+    payload = {'model': embedding_model, 'input': list(texts)}
+    data = json.dumps(payload).encode('utf-8')
+    req = urllib.request.Request(url, data=data, headers={'Content-Type': 'application/json'}, method='POST')
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        result = json.loads(resp.read().decode('utf-8'))
+    return result.get('embeddings', [])
 
 
 # ─── Image backend (Stable Diffusion server) ─────────────────────────────────
@@ -1153,6 +1178,12 @@ def load_projects():
             df['image_format'] = df['image_format'].fillna('png').replace('', 'png').astype(str)
         else:
             df['image_format'] = 'png'
+        # Optional reference dataset for retrieval-augmented (grounded)
+        # text tagging — older registries predate this column.
+        if 'reference_path' in df.columns:
+            df['reference_path'] = df['reference_path'].fillna('').astype(str)
+        else:
+            df['reference_path'] = ''
         return df.sort_values('last_updated', ascending=False).to_dict('records')
     except Exception as e:
         print(f"Error loading projects: {e}")
@@ -1163,7 +1194,7 @@ def get_project(project_id):
     return next((p for p in load_projects() if str(p['project_id']) == str(project_id)), None)
 
 
-def save_project(project_id, name, csv_path, config_path='', mode='text'):
+def save_project(project_id, name, csv_path, config_path='', mode='text', reference_path=''):
     path = os.path.normpath(PROJECTS_CSV)
     with _projects_lock:
         projects = load_projects()
@@ -1184,11 +1215,13 @@ def save_project(project_id, name, csv_path, config_path='', mode='text'):
                 'mode': mode or 'text',
                 'image_naming_column': '',
                 'image_format': 'png',
+                'reference_path': reference_path or '',
             })
         else:
             existing['last_updated'] = now
             existing['config_path'] = config_path or existing.get('config_path', '')
             existing['mode'] = mode or existing.get('mode', 'text')
+            existing['reference_path'] = reference_path or existing.get('reference_path', '')
         pd.DataFrame(projects).to_csv(path, index=False)
 
 
@@ -1355,7 +1388,7 @@ def load_config_file(config_path):
         records = df.to_dict('records')
         str_fields = ('ConditionField', 'ConditionOp', 'ConditionValue',
                       'DefaultValue', 'SendContext', 'InputColumns', 'ImageParams',
-                      'NodeX', 'NodeY')
+                      'NodeX', 'NodeY', 'RetrievalConfig')
         for r in records:
             r.setdefault('ConditionField', '')
             r.setdefault('ConditionOp',    '==')
@@ -1366,6 +1399,7 @@ def load_config_file(config_path):
             r.setdefault('ImageParams',    '')
             r.setdefault('NodeX',          '')
             r.setdefault('NodeY',          '')
+            r.setdefault('RetrievalConfig', '')
             for k in str_fields:
                 val = r[k]
                 if not isinstance(val, str):
@@ -1382,6 +1416,253 @@ def load_config_file(config_path):
 
 def save_config_file(config_path, config_data):
     pd.DataFrame(config_data).to_csv(config_path, index=False)
+
+
+def parse_retrieval_config(definition):
+    """A tag's RetrievalConfig cell is a JSON blob, same precedent as
+    ImageParams — {'enabled': bool, 'top_k': int}. query_columns isn't
+    stored separately; retrieval always queries with whatever columns the
+    tag itself already uses (its InputColumns / effective context)."""
+    try:
+        cfg = json.loads(definition.get('RetrievalConfig') or '{}')
+        if not isinstance(cfg, dict):
+            cfg = {}
+    except (ValueError, TypeError):
+        cfg = {}
+    return {
+        'enabled': bool(cfg.get('enabled')),
+        'top_k':   max(1, _coerce_int(cfg.get('top_k'), 3)),
+    }
+
+
+# ─── Reference data (retrieval-augmented tagging) ───────────────────────────
+# Grounds text-mode tags against a bulk reference dataset (structured CSV or
+# unstructured txt/md/PDF) the user attaches to a project — too large to fit
+# in a prompt, so only the most relevant chunks are pulled in per row. No new
+# server: embeddings go through the same Ollama connection already used for
+# tagging (see embed_texts above), and the index is a flat file on disk next
+# to the project's other output, not a hosted vector DB.
+
+REFERENCE_CHUNK_SIZE    = 800  # characters, for unstructured text/PDF chunking
+REFERENCE_CHUNK_OVERLAP = 100
+
+REFERENCE_INDEX_STATUS = {}  # project_id -> dict(status, done, total, message)
+_reference_index_lock  = threading.Lock()
+_reference_index_cache = {}  # project_id -> (vectors_mtime, vectors, meta)
+
+
+def _reference_index_dir(project_id):
+    proj = get_project(project_id)
+    if proj and proj.get('csv_path'):
+        project_dir = os.path.dirname(os.path.abspath(proj['csv_path']))
+    else:
+        project_dir = os.path.join(settings.MEDIA_ROOT, str(project_id))
+    return os.path.join(project_dir, 'reference_index')
+
+
+def chunk_structured_csv(path):
+    """One chunk per row, rendered as the same key:value text used to build
+    the tagging prompt's context section — keeps a retrieved match readable
+    rather than a wall of CSV. Original fields are kept alongside for a
+    cleaner re-display if ever needed."""
+    df = read_csv_safe(path)
+    chunks = []
+    for i, row in df.iterrows():
+        fields = {c: ('' if pd.isna(row[c]) else row[c]) for c in df.columns}
+        text = "\n".join(f"{k}: {v}" for k, v in fields.items())
+        chunks.append({'text': text, 'source': f'row {i}', 'fields': fields})
+    return chunks
+
+
+def _window_chunks(text, source_label, size=REFERENCE_CHUNK_SIZE, overlap=REFERENCE_CHUNK_OVERLAP):
+    text = re.sub(r'\s+', ' ', text).strip()
+    chunks = []
+    start = 0
+    while start < len(text):
+        end = min(start + size, len(text))
+        piece = text[start:end].strip()
+        if piece:
+            chunks.append({'text': piece, 'source': source_label, 'fields': {}})
+        if end == len(text):
+            break
+        start = end - overlap
+    return chunks
+
+
+def chunk_unstructured_text(path):
+    with open(path, encoding='utf-8', errors='replace') as f:
+        text = f.read()
+    return _window_chunks(text, os.path.basename(path))
+
+
+def extract_pdf_chunks(path):
+    from pypdf import PdfReader
+    reader = PdfReader(path)
+    chunks = []
+    for page_num, page in enumerate(reader.pages, start=1):
+        text = page.extract_text() or ''
+        chunks.extend(_window_chunks(text, f'{os.path.basename(path)} p.{page_num}'))
+    return chunks
+
+
+def build_reference_chunks(reference_path):
+    """Structured CSV -> one chunk per row; PDF -> per-page windowed text;
+    anything else (txt/md) -> windowed text over the whole file."""
+    ext = os.path.splitext(reference_path)[1].lower()
+    if ext == '.csv':
+        return chunk_structured_csv(reference_path)
+    if ext == '.pdf':
+        return extract_pdf_chunks(reference_path)
+    return chunk_unstructured_text(reference_path)
+
+
+REFERENCE_EMBED_BATCH = 16
+
+
+def build_reference_index(project_id):
+    """One-time (per project, per embedding model) job: chunk the attached
+    reference file, embed every chunk, and write vectors.npy + meta.jsonl +
+    manifest.json under the project's reference_index/ folder. Progress is
+    tracked the same way bulk image retries are — a module-level dict polled
+    over HTTP — since this can take a while for a large reference file."""
+    proj = get_project(project_id)
+    if not proj or not proj.get('reference_path'):
+        raise ValueError('This project has no reference dataset attached.')
+    reference_path = proj['reference_path']
+    if not os.path.exists(reference_path):
+        raise ValueError('Reference file is missing on disk.')
+
+    conn = get_active_connection()
+    embedding_model = (conn.get('embedding_model') or '').strip()
+    if not embedding_model:
+        raise ValueError('Set an embedding model in the Connection Editor first.')
+
+    chunks = build_reference_chunks(reference_path)
+    total  = len(chunks)
+    with _reference_index_lock:
+        REFERENCE_INDEX_STATUS[project_id] = {'status': 'running', 'done': 0, 'total': total, 'message': ''}
+
+    if total == 0:
+        with _reference_index_lock:
+            REFERENCE_INDEX_STATUS[project_id]['status'] = 'error'
+            REFERENCE_INDEX_STATUS[project_id]['message'] = 'No text could be extracted from the reference file.'
+        raise ValueError('No text could be extracted from the reference file.')
+
+    vectors = []
+    try:
+        for start in range(0, total, REFERENCE_EMBED_BATCH):
+            batch = chunks[start:start + REFERENCE_EMBED_BATCH]
+            vectors.extend(embed_texts([c['text'] for c in batch], embedding_model, conn=conn))
+            with _reference_index_lock:
+                REFERENCE_INDEX_STATUS[project_id]['done'] = min(start + REFERENCE_EMBED_BATCH, total)
+    except Exception as e:
+        with _reference_index_lock:
+            REFERENCE_INDEX_STATUS[project_id]['status']  = 'error'
+            REFERENCE_INDEX_STATUS[project_id]['message'] = str(e)
+        raise
+
+    index_dir = _reference_index_dir(project_id)
+    os.makedirs(index_dir, exist_ok=True)
+    arr = np.array(vectors, dtype=np.float32)
+    np.save(os.path.join(index_dir, 'vectors.npy'), arr)
+    with open(os.path.join(index_dir, 'meta.jsonl'), 'w') as f:
+        for i, c in enumerate(chunks):
+            f.write(json.dumps({'chunk_id': i, 'text': c['text'], 'source': c['source']}) + '\n')
+    manifest = {
+        'embedding_model': embedding_model,
+        'dims':            int(arr.shape[1]) if arr.size else 0,
+        'chunk_count':     total,
+        'reference_path':  reference_path,
+        'built_at':        datetime.now().isoformat(),
+    }
+    with open(os.path.join(index_dir, 'manifest.json'), 'w') as f:
+        json.dump(manifest, f)
+
+    _reference_index_cache.pop(project_id, None)
+    with _reference_index_lock:
+        REFERENCE_INDEX_STATUS[project_id]['status'] = 'finished'
+    return manifest
+
+
+def get_reference_manifest(project_id):
+    manifest_path = os.path.join(_reference_index_dir(project_id), 'manifest.json')
+    try:
+        with open(manifest_path) as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def reference_index_is_stale(project_id):
+    """True when the project has a reference file but no index yet, or the
+    active connection's embedding model has changed since the index was
+    built (the old vectors are no longer comparable to a freshly embedded
+    query)."""
+    proj = get_project(project_id)
+    if not proj or not proj.get('reference_path'):
+        return False
+    manifest = get_reference_manifest(project_id)
+    if not manifest:
+        return True
+    active_embedding_model = (get_active_connection().get('embedding_model') or '').strip()
+    return manifest.get('embedding_model') != active_embedding_model
+
+
+def load_reference_index(project_id):
+    index_dir    = _reference_index_dir(project_id)
+    vectors_path = os.path.join(index_dir, 'vectors.npy')
+    meta_path    = os.path.join(index_dir, 'meta.jsonl')
+    if not (os.path.exists(vectors_path) and os.path.exists(meta_path)):
+        return None, None
+
+    mtime  = os.path.getmtime(vectors_path)
+    cached = _reference_index_cache.get(project_id)
+    if cached and cached[0] == mtime:
+        return cached[1], cached[2]
+
+    vectors = np.load(vectors_path)
+    meta = []
+    with open(meta_path) as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                meta.append(json.loads(line))
+    _reference_index_cache[project_id] = (mtime, vectors, meta)
+    return vectors, meta
+
+
+def retrieve_reference_chunks(project_id, query_text, top_k=3):
+    """Embed `query_text` with the same model the index was built with, then
+    return the top_k reference chunks by cosine similarity. Plain numpy
+    brute-force — adequate at the scale this feature targets (thousands to
+    tens of thousands of chunks); returns [] rather than raising whenever
+    retrieval isn't usable (no index yet, empty query, embedding call
+    failed), since a grounding step failing shouldn't break the tagging run."""
+    if not query_text or not query_text.strip():
+        return []
+    vectors, meta = load_reference_index(project_id)
+    if vectors is None or len(vectors) == 0:
+        return []
+    manifest = get_reference_manifest(project_id)
+    embedding_model = (manifest or {}).get('embedding_model', '')
+    if not embedding_model:
+        return []
+    try:
+        embeds = embed_texts([query_text], embedding_model)
+        if not embeds:
+            return []
+        query_vec = np.array(embeds[0], dtype=np.float32)
+    except Exception as e:
+        print(f"Retrieval embedding error: {e}")
+        return []
+
+    query_norm = np.linalg.norm(query_vec)
+    if query_norm == 0:
+        return []
+    sims = (vectors @ query_vec) / (np.linalg.norm(vectors, axis=1) * query_norm + 1e-8)
+    k = max(1, min(top_k, len(sims)))
+    top_idx = np.argsort(-sims)[:k]
+    return [{'text': meta[i]['text'], 'source': meta[i]['source'], 'score': float(sims[i])} for i in top_idx]
 
 
 # ─── Condition evaluation ─────────────────────────────────────────────────────
@@ -1453,6 +1734,15 @@ def row_by_row_tagger(session_key, csv_path, config_path, input_columns,
             if exp_col not in df.columns:
                 df[exp_col] = ""
             ordered_output_cols.extend([out_col, exp_col])
+            # Grounded tags get an audit column recording which reference
+            # chunks were retrieved for each row — the point of retrieval
+            # here is judging data quality, so the user needs to see what
+            # was compared against, not just trust the answer.
+            if mode != 'image' and parse_retrieval_config(definition)['enabled']:
+                src_col = out_col + '_sources'
+                if src_col not in df.columns:
+                    df[src_col] = ""
+                ordered_output_cols.append(src_col)
         other_cols = [c for c in df.columns if c not in ordered_output_cols]
         df = df[other_cols + ordered_output_cols]
         df.to_csv(tagged_path, index=False)
@@ -1495,10 +1785,28 @@ def row_by_row_tagger(session_key, csv_path, config_path, input_columns,
                 # Per-tag column filter: draws from all_context so any CSV column is reachable
                 rendered_prompt, display_context = render_tag_prompt(definition, full_context, all_context)
 
+                # Retrieval-augmented grounding: query the project's reference
+                # index (if this tag has it enabled) with the same columns
+                # already feeding the prompt, and splice the top matches in
+                # as a distinct block — consistent with the plain-text
+                # context dump rather than JSON or a templating engine.
+                retrieval_cfg = parse_retrieval_config(definition) if mode != 'image' else {'enabled': False, 'top_k': 3}
+                retrieved_chunks = []
+                if retrieval_cfg['enabled'] and project_id:
+                    query_text = " ".join(str(v) for v in display_context.values())
+                    retrieved_chunks = retrieve_reference_chunks(project_id, query_text, top_k=retrieval_cfg['top_k'])
+
                 user_prompt = (
                     f"Row {i+1}/{total_rows}:\n"
                     + "\n".join(f"  {k}: {v}" for k, v in display_context.items())
-                    + f"\n\nTask: {rendered_prompt}\n\n"
+                )
+                if retrieved_chunks:
+                    user_prompt += (
+                        "\n\nReference Data (retrieved — ground your answer in this, not just the row above):\n"
+                        + "\n".join(f"  [{n+1}] ({c['source']}) {c['text']}" for n, c in enumerate(retrieved_chunks))
+                    )
+                user_prompt += (
+                    f"\n\nTask: {rendered_prompt}\n\n"
                     f"Best Answer: <your answer>\n"
                     f"Explanation: <brief reason>"
                 )
@@ -1549,6 +1857,8 @@ def row_by_row_tagger(session_key, csv_path, config_path, input_columns,
 
                 df.at[i, out_col] = best_answer
                 df.at[i, out_col + '_exp'] = explanation
+                if retrieval_cfg['enabled'] and (out_col + '_sources') in df.columns:
+                    df.at[i, out_col + '_sources'] = "; ".join(c['source'] for c in retrieved_chunks)
                 generated[out_col] = best_answer
                 generated_detail[out_col] = {
                     'prompt':      rendered_prompt,
@@ -1567,11 +1877,13 @@ def row_by_row_tagger(session_key, csv_path, config_path, input_columns,
                 # live_logs carry extra image_url/image_urls for the frontend
                 # (image_urls has every candidate when num_images > 1, for the
                 # grid thumbnail strip); the CSV log above keeps its fixed
-                # 5-column schema.
+                # 5-column schema. retrieved_sources is similarly UI-only —
+                # the CSV's audit trail is the `_sources` column above.
                 live_entry = dict(log_entry)
                 live_entry["image_url"] = image_url
                 live_entry["image_urls"] = image_urls
                 live_entry["image_meta"] = image_meta
+                live_entry["retrieved_sources"] = [c['source'] for c in retrieved_chunks]
                 live = PROGRESS_STATUS[session_key]["live_logs"]
                 live.append(live_entry)
                 if len(live) > 100:

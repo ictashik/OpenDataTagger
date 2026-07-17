@@ -71,6 +71,10 @@ from .utils import (
     tagged_path_for_project,
     build_gallery_items,
     build_gallery_zip,
+    REFERENCE_INDEX_STATUS,
+    build_reference_index,
+    get_reference_manifest,
+    reference_index_is_stale,
 )
 
 
@@ -200,8 +204,9 @@ def upload_file_view(request):
     if request.method == 'POST':
         form = UploadForm(request.POST, request.FILES)
         if form.is_valid():
-            csv_file    = form.cleaned_data['csv_file']
-            config_file = form.cleaned_data.get('config_file')
+            csv_file       = form.cleaned_data['csv_file']
+            config_file    = form.cleaned_data.get('config_file')
+            reference_file = form.cleaned_data.get('reference_file')
             mode        = 'image' if request.POST.get('mode') == 'image' else 'text'
 
             # Each project gets its own media/<project_id>/ folder so two
@@ -229,10 +234,18 @@ def upload_file_view(request):
             else:
                 config_path = None
 
-            request.session['csv_filepath']    = csv_path
-            request.session['config_filepath'] = config_path
-            request.session['project_mode']    = mode
-            request.session['project_id']      = project_id
+            if reference_file:
+                reference_path = os.path.join(project_dir, reference_file.name)
+                fs.save(reference_file.name, reference_file)
+                reference_path = convert_upload_to_csv(reference_path)
+            else:
+                reference_path = None
+
+            request.session['csv_filepath']       = csv_path
+            request.session['config_filepath']    = config_path
+            request.session['reference_filepath'] = reference_path
+            request.session['project_mode']       = mode
+            request.session['project_id']         = project_id
             # A brand-new upload must never resume a previous project's
             # tagging run — without this, tagging_view's "monitor-only"
             # branch would find the old (possibly paused/deleted) session
@@ -246,6 +259,7 @@ def upload_file_view(request):
                 csv_path=csv_path,
                 config_path=config_path or '',
                 mode=mode,
+                reference_path=reference_path or '',
             )
 
             return redirect('define_columns')
@@ -280,18 +294,20 @@ def define_columns_view(request):
         send_contexts    = request.POST.getlist('send_context')
         tag_input_cols   = request.POST.getlist('tag_input_cols')
         image_params     = request.POST.getlist('image_params')
+        retrieval_configs = request.POST.getlist('retrieval_config')
         node_xs          = request.POST.getlist('node_x')
         node_ys          = request.POST.getlist('node_y')
         image_naming_col = request.POST.get('image_naming_column', '').strip()
         image_format     = (request.POST.get('image_format', '').strip() or 'png').lower()
 
         new_config = []
-        # zip_longest: image_params/node_x/node_y are absent in some contexts (fills
-        # to ''); other arrays are always one-per-card thanks to the mirrored-hidden inputs.
-        for oc, pt, cf, cop, cv, dv, sc, tic, ip, nx, ny in zip_longest(
+        # zip_longest: image_params/node_x/node_y/retrieval_config are absent in some
+        # contexts (fills to ''); other arrays are always one-per-card thanks to the
+        # mirrored-hidden inputs.
+        for oc, pt, cf, cop, cv, dv, sc, tic, ip, rc, nx, ny in zip_longest(
             output_cols, prompts,
             condition_fields, condition_ops, condition_values, default_values,
-            send_contexts, tag_input_cols, image_params, node_xs, node_ys,
+            send_contexts, tag_input_cols, image_params, retrieval_configs, node_xs, node_ys,
             fillvalue='',
         ):
             if (oc or '').strip() and (pt or '').strip():
@@ -305,6 +321,7 @@ def define_columns_view(request):
                     "SendContext":    (sc or '').strip(),
                     "InputColumns":   (tic or '').strip(),
                     "ImageParams":    (ip or '').strip(),
+                    "RetrievalConfig": (rc or '').strip(),
                     "NodeX":          (nx or '').strip(),
                     "NodeY":          (ny or '').strip(),
                 })
@@ -328,6 +345,11 @@ def define_columns_view(request):
 
         return redirect('tagging')
 
+    project_id = request.session.get('project_id')
+    proj       = get_project(project_id) if project_id else None
+    reference_path = (proj.get('reference_path', '') if proj else '') or ''
+    reference_manifest = get_reference_manifest(project_id) if (project_id and reference_path) else None
+
     context = {
         'columns':       all_columns,
         'columns_json':  json.dumps(all_columns),
@@ -339,6 +361,14 @@ def define_columns_view(request):
         'schedulers':    [],
         'aspect_presets': [],
         'row_count':     len(df),
+        'reference_filename': os.path.basename(reference_path) if reference_path else '',
+        'reference_ready':    bool(reference_manifest) and not reference_index_is_stale(project_id) if reference_path else False,
+        # "stale" is distinct from "never built" — only true once a manifest
+        # exists but no longer matches the active embedding model, so the
+        # UI can tell "Not indexed yet" apart from "Rebuild needed".
+        'reference_stale':    bool(reference_manifest) and reference_index_is_stale(project_id) if reference_path else False,
+        'reference_chunk_count': (reference_manifest or {}).get('chunk_count', 0),
+        'embedding_model':    (get_active_connection().get('embedding_model') or ''),
     }
     if mode == 'image':
         context['image_models']   = get_downloaded_image_models()
@@ -356,8 +386,6 @@ def define_columns_view(request):
         }
         context['dup_counts_json'] = json.dumps(dup_counts)
 
-        project_id = request.session.get('project_id')
-        proj = get_project(project_id) if project_id else None
         context['image_naming_column'] = (proj.get('image_naming_column', '') if proj else '') or ''
         context['image_format'] = (proj.get('image_format', '') if proj else '') or 'png'
     return render(request, 'define_columns.html', context)
@@ -415,6 +443,36 @@ def estimate_image_view(request):
         'total_estimate_sec': round(elapsed_sec * row_count * num_images, 1),
         'rendered_prompt':    rendered_prompt,
     })
+
+
+# ─── Reference data (retrieval) ──────────────────────────────────────────────
+
+def build_reference_index_view(request):
+    """Kick off the one-time (per embedding model) index build for a
+    project's attached reference dataset. Mirrors bulk_retry_view's
+    background-thread + polled-status pattern."""
+    if request.method != 'POST':
+        return JsonResponse({'success': False, 'error': 'POST required.'}, status=400)
+
+    project_id = request.session.get('project_id')
+    if not project_id:
+        return JsonResponse({'success': False, 'error': 'No project in session.'}, status=400)
+
+    t = threading.Thread(target=build_reference_index, args=(project_id,), daemon=True)
+    t.start()
+    return JsonResponse({'success': True})
+
+
+def reference_index_status_view(request):
+    project_id = request.session.get('project_id')
+    status = REFERENCE_INDEX_STATUS.get(project_id) if project_id else None
+    if not status:
+        manifest = get_reference_manifest(project_id) if project_id else None
+        if manifest:
+            return JsonResponse({'success': True, 'status': 'finished', 'done': manifest['chunk_count'],
+                                 'total': manifest['chunk_count'], 'message': ''})
+        return JsonResponse({'success': False, 'error': 'No index job for this project.'}, status=400)
+    return JsonResponse({'success': True, **status})
 
 
 # ─── Tagging ─────────────────────────────────────────────────────────────────
@@ -1042,18 +1100,23 @@ def connection_editor_view(request):
         host  = request.POST.get('host', '').strip()
         port  = request.POST.get('port', '').strip()
         model = request.POST.get('model', '').strip()
+        embedding_model = request.POST.get('embedding_model', '').strip()
         if host and port and model:
-            save_connection(host, port, model)
+            save_connection(host, port, model, embedding_model)
             return JsonResponse({'success': True, 'message': 'Connection saved.'})
         return JsonResponse({'success': False, 'message': 'Host, port, and model are all required.'}, status=400)
 
     connections   = load_connections()
     active        = get_active_connection()
     unique_models = list(dict.fromkeys(c['model'] for c in connections))
+    unique_embedding_models = list(dict.fromkeys(
+        c['embedding_model'] for c in connections if c.get('embedding_model')
+    ))
     return render(request, 'connection.html', {
         'connections':   connections,
         'active':        active,
         'unique_models': unique_models,
+        'unique_embedding_models': unique_embedding_models,
     })
 
 

@@ -2,5 +2,7 @@
 # The repo-root requirements.txt is stale (see CLAUDE.md) — this is the real list.
 Django>=5.0
 pandas
+numpy
 openai
 Pillow
+pypdf

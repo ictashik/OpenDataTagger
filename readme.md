@@ -25,6 +25,9 @@ OpenDataTagger (Athena ODT) is an **AI-powered CSV tagging tool** built with Dja
 - **Image Generation Mode:**
   Run a project in **image** mode instead of text tagging — each output column generates a Stable Diffusion image per row via a companion [`sd_server`](sd_server/README.md) process. Manage the connection, browse/download models and LoRAs, and compare models side-by-side from the **Image Backend** page.
 
+- **Retrieval-Augmented Tagging:**
+  Attach a bulk reference dataset (structured CSV or unstructured TXT/MD/PDF) to a text-mode project — e.g. a canonical nutrition table to check claimed values against, or a standards document too long to paste into a prompt. Any output tag can then be marked to retrieve the most relevant reference chunks per row and ground its answer in them, with the matched sources recorded alongside the tag for review. No extra service to run — embeddings go through the same local Ollama connection already configured for tagging.
+
 - **Responsive UI:**
   Clean and responsive interface built with Tailwind CSS and featuring a sidebar for easy navigation.
 
@@ -146,6 +149,15 @@ Starts the app and `sd_server` on one Docker network. In the app's **Image Backe
 4. Use **Compare Models** to generate the same prompt across several models side-by-side before committing to one for the full run.
 5. Upload a CSV in **Image** mode and define output columns as image-generation prompts, same as text tagging.
 
+### Retrieval-Augmented Tagging
+
+For **Text** mode projects that need to cross-check rows against bulk reference data — structured (a canonical values table) or unstructured (a spec/standards document) — rather than fit it all into a prompt.
+
+1. In the **Connection Editor**, set an **Embedding Model** (e.g. `nomic-embed-text`) alongside the usual chat model — Ollama serves both from the same host/port, so there's nothing new to install or run.
+2. On **Upload**, attach a **Reference Dataset** (`.csv` for structured rows, `.txt`/`.md`/`.pdf` for prose) alongside your main CSV.
+3. On **Define Columns**, click **Build Index** once — the reference file is chunked (one chunk per CSV row, or windowed paragraphs for text/PDF) and embedded, then stored on disk next to the project's other output.
+4. Check **Ground with reference data** on any output tag and set how many matches (Top-K) to retrieve. At tagging time, the closest reference chunks for that row are appended to the prompt as a "Reference Data" block, and the matched sources are recorded in a `<column>_sources` column for review.
+
 ## Project Structure
 
 ```
@@ -212,6 +224,9 @@ OpenDataTagger/
 
 - **Image Backend Integration:**
   Image generation talks to `sd_server` via `tagger_app/utils.py`, using the most-recently-used entry in `image_connections.csv` (falls back to `SD_SERVER_DEFAULT` in `settings.py`). Manage this from the Image Backend page.
+
+- **Retrieval Integration:**
+  Grounding text tags against a reference dataset reuses the active `connections.csv` entry's `embedding_model` field — no separate connection to configure. A built index lives at `media/<project_id>/reference_index/` (`vectors.npy`, `meta.jsonl`, `manifest.json`); changing the embedding model marks it stale until rebuilt.
 
 - **Caching:**
   Django's `LocMemCache` tracks real-time LLM/image-generation usage statistics and tagging progress. It's in-memory only and resets on server restart.

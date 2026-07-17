@@ -10,3 +10,7 @@ class UploadForm(forms.Form):
         required=False,
         label="Config File (Optional)"
     )
+    reference_file = forms.FileField(
+        required=False,
+        label="Reference Dataset (Optional)"
+    )
