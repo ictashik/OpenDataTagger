@@ -1344,7 +1344,8 @@ def load_config_file(config_path):
             return []
         records = df.to_dict('records')
         str_fields = ('ConditionField', 'ConditionOp', 'ConditionValue',
-                      'DefaultValue', 'SendContext', 'InputColumns', 'ImageParams')
+                      'DefaultValue', 'SendContext', 'InputColumns', 'ImageParams',
+                      'NodeX', 'NodeY')
         for r in records:
             r.setdefault('ConditionField', '')
             r.setdefault('ConditionOp',    '==')
@@ -1353,6 +1354,8 @@ def load_config_file(config_path):
             r.setdefault('SendContext',    '')
             r.setdefault('InputColumns',   '')
             r.setdefault('ImageParams',    '')
+            r.setdefault('NodeX',          '')
+            r.setdefault('NodeY',          '')
             for k in str_fields:
                 val = r[k]
                 if not isinstance(val, str):
