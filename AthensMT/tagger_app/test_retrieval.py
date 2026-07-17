@@ -454,6 +454,54 @@ class ConfigAndStalenessTests(_IsolatedRegistryMixin, TestCase):
         self.assertFalse(utils.reference_index_is_stale(project_id))
 
 
+class BuildIndexRobustnessTests(_IsolatedRegistryMixin, TestCase):
+    """No Ollama required — these exercise failure paths that occur before
+    any embedding call, so they run in the always-on fast tier rather than
+    behind RAG_LIVE_TESTS."""
+
+    def test_corrupt_reference_file_fails_cleanly_without_raising(self):
+        """Reproduces a real production bug: a reference PDF that pypdf
+        couldn't parse (an AES-encrypted one, before `cryptography` was
+        added as a dependency) crashed build_reference_index's bare
+        background thread with an unhandled traceback. Because the crash
+        happened during chunking — before REFERENCE_INDEX_STATUS was ever
+        set — the status endpoint had nothing to report and the Build
+        Index UI polled a plain 400 forever. A corrupt/unparseable file of
+        any kind must fail into a recorded status instead, never raise."""
+        main_csv = os.path.join(settings.MEDIA_ROOT, 'main.csv')
+        pd.DataFrame({'FoodName': ['x']}).to_csv(main_csv, index=False)
+        project_id = self.make_project(main_csv)
+        bad_pdf = os.path.join(settings.MEDIA_ROOT, 'broken.pdf')
+        with open(bad_pdf, 'wb') as f:
+            f.write(b'this is not a real pdf file')
+        utils.add_reference_file(project_id, 'broken.pdf', bad_pdf, 'pdf', os.path.getsize(bad_pdf))
+        utils.save_connection('localhost', '11434', 'chat-model', 'embed-model')
+
+        result = utils.build_reference_index(project_id)  # must not raise
+
+        self.assertIsNone(result)
+        status = utils.REFERENCE_INDEX_STATUS[project_id]
+        self.assertEqual(status['status'], 'error')
+        self.assertIn('broken.pdf', status['message'])
+
+    def test_status_recorded_immediately_even_if_first_file_fails(self):
+        """REFERENCE_INDEX_STATUS must exist the instant the job starts —
+        not only after chunking succeeds — so the status endpoint never
+        falls back to a bare 400 for a build that is (or was) genuinely
+        running."""
+        main_csv = os.path.join(settings.MEDIA_ROOT, 'main.csv')
+        pd.DataFrame({'FoodName': ['x']}).to_csv(main_csv, index=False)
+        project_id = self.make_project(main_csv)
+        bad_pdf = os.path.join(settings.MEDIA_ROOT, 'broken.pdf')
+        with open(bad_pdf, 'wb') as f:
+            f.write(b'this is not a real pdf file')
+        utils.add_reference_file(project_id, 'broken.pdf', bad_pdf, 'pdf', os.path.getsize(bad_pdf))
+        utils.save_connection('localhost', '11434', 'chat-model', 'embed-model')
+
+        utils.build_reference_index(project_id)
+        self.assertIn(project_id, utils.REFERENCE_INDEX_STATUS)
+
+
 # ─── Tier 2: small real-Ollama checks + edge cases ──────────────────────────
 
 @unittest.skipUnless(RAG_LIVE_TESTS, 'set RAG_LIVE_TESTS=1 to run tests against a real local Ollama')
@@ -581,8 +629,8 @@ class LiveSmallRetrievalTests(_IsolatedRegistryMixin, TestCase):
         project_id = self.make_project(main_csv, [ref_path])
         utils.save_connection(OLLAMA_HOST, OLLAMA_PORT, CHAT_MODEL, 'gpt-oss:20b')
 
-        with self.assertRaises(Exception):
-            utils.build_reference_index(project_id)
+        result = utils.build_reference_index(project_id)  # must not raise
+        self.assertIsNone(result)
         status = utils.REFERENCE_INDEX_STATUS.get(project_id)
         self.assertEqual(status['status'], 'error')
         self.assertIn('embeddings', status['message'])
@@ -597,33 +645,39 @@ class LiveSmallRetrievalTests(_IsolatedRegistryMixin, TestCase):
         results = utils.retrieve_reference_chunks(project_id, 'any food', top_k=1000)
         self.assertEqual(len(results), 5)
 
-    def test_build_index_without_embedding_model_raises_clear_error(self):
+    def test_build_index_without_embedding_model_fails_with_clear_error(self):
         main_csv = os.path.join(settings.MEDIA_ROOT, 'main.csv')
         pd.DataFrame({'FoodName': ['x']}).to_csv(main_csv, index=False)
         ref_path, _ = self._small_reference_csv(5)
         project_id = self.make_project(main_csv, [ref_path])
         utils.save_connection(OLLAMA_HOST, OLLAMA_PORT, CHAT_MODEL, '')  # clear embedding model
 
-        with self.assertRaisesMessage(ValueError, 'embedding model'):
-            utils.build_reference_index(project_id)
+        result = utils.build_reference_index(project_id)  # must not raise
+        self.assertIsNone(result)
+        self.assertEqual(utils.REFERENCE_INDEX_STATUS[project_id]['status'], 'error')
+        self.assertIn('embedding model', utils.REFERENCE_INDEX_STATUS[project_id]['message'])
 
-    def test_build_index_on_empty_reference_file_raises_clear_error(self):
+    def test_build_index_on_empty_reference_file_fails_with_clear_error(self):
         main_csv = os.path.join(settings.MEDIA_ROOT, 'main.csv')
         pd.DataFrame({'FoodName': ['x']}).to_csv(main_csv, index=False)
         empty_ref = os.path.join(settings.MEDIA_ROOT, 'empty.txt')
         open(empty_ref, 'w').close()
         project_id = self.make_project(main_csv, [empty_ref])
 
-        with self.assertRaisesMessage(ValueError, 'No text could be extracted'):
-            utils.build_reference_index(project_id)
+        result = utils.build_reference_index(project_id)  # must not raise
+        self.assertIsNone(result)
+        self.assertEqual(utils.REFERENCE_INDEX_STATUS[project_id]['status'], 'error')
+        self.assertIn('No text could be extracted', utils.REFERENCE_INDEX_STATUS[project_id]['message'])
 
-    def test_build_index_with_no_files_attached_raises_clear_error(self):
+    def test_build_index_with_no_files_attached_fails_with_clear_error(self):
         main_csv = os.path.join(settings.MEDIA_ROOT, 'main.csv')
         pd.DataFrame({'FoodName': ['x']}).to_csv(main_csv, index=False)
         project_id = self.make_project(main_csv)  # no reference files at all
 
-        with self.assertRaisesMessage(ValueError, 'no reference files'):
-            utils.build_reference_index(project_id)
+        result = utils.build_reference_index(project_id)  # must not raise
+        self.assertIsNone(result)
+        self.assertEqual(utils.REFERENCE_INDEX_STATUS[project_id]['status'], 'error')
+        self.assertIn('no reference files', utils.REFERENCE_INDEX_STATUS[project_id]['message'])
 
     def test_retrieval_before_any_index_built_returns_empty(self):
         main_csv = os.path.join(settings.MEDIA_ROOT, 'main.csv')

@@ -1643,6 +1643,13 @@ def extract_pdf_chunks(path):
     from pypdf import PdfReader
     label = os.path.basename(path)
     reader = PdfReader(path)
+    if reader.is_encrypted:
+        # Most "protected" PDFs (permissions-only, no real user password)
+        # decrypt fine with an empty password — requires the `cryptography`
+        # package for AES-encrypted ones (see requirements.txt). A PDF with
+        # a real user password still fails here, surfaced as a normal
+        # per-file error by the caller rather than crashing anything.
+        reader.decrypt('')
     chunks = []
     for page_num, page in enumerate(reader.pages, start=1):
         text = page.extract_text() or ''
@@ -1692,51 +1699,71 @@ def build_reference_index(project_id):
     reference_index/ folder — one combined index across all files. Progress
     (including a start_time for ETA) is tracked the same way bulk image
     retries are — a module-level dict polled over HTTP — since this can
-    take a while for a large reference file."""
-    files = list_reference_files(project_id)
-    if not files:
-        raise ValueError('This project has no reference files attached.')
-    missing = [f['filename'] for f in files if not os.path.exists(f['path'])]
-    if missing:
-        raise ValueError(f"Reference file(s) missing on disk: {', '.join(missing)}")
+    take a while for a large reference file.
 
-    conn = get_active_connection()
-    embedding_model = (conn.get('embedding_model') or '').strip()
-    if not embedding_model:
-        raise ValueError('Set an embedding model in the Connection Editor first.')
-
-    chunks = []
-    per_file_counts = {}
-    for f in files:
-        file_chunks = build_reference_chunks(f['path'])
-        per_file_counts[f['filename']] = len(file_chunks)
-        chunks.extend(file_chunks)
-    total = len(chunks)
-
+    Never raises: this always runs in a bare `threading.Thread(target=...)`
+    (see build_reference_index_view) with nothing to catch an escaped
+    exception — one previously crashed the thread with no status ever
+    recorded (an unreadable PDF failing before REFERENCE_INDEX_STATUS was
+    even initialized), leaving the Build Index UI polling a plain 400
+    forever. Every failure path — bad config, a missing/corrupt file, an
+    embedding call failing partway through — is instead caught and
+    recorded in REFERENCE_INDEX_STATUS, matching row_by_row_tagger's same
+    convention for the same reason. Returns the manifest dict on success,
+    None on failure."""
     with _reference_index_lock:
         REFERENCE_INDEX_STATUS[project_id] = {
-            'status': 'running', 'done': 0, 'total': total, 'message': '',
+            'status': 'running', 'done': 0, 'total': 0, 'message': '',
             'start_time': time.time(),
         }
 
-    if total == 0:
+    def fail(message):
         with _reference_index_lock:
-            REFERENCE_INDEX_STATUS[project_id]['status'] = 'error'
-            REFERENCE_INDEX_STATUS[project_id]['message'] = 'No text could be extracted from the reference file(s).'
-        raise ValueError('No text could be extracted from the reference file(s).')
+            REFERENCE_INDEX_STATUS[project_id]['status']  = 'error'
+            REFERENCE_INDEX_STATUS[project_id]['message'] = message
 
-    vectors = []
     try:
+        files = list_reference_files(project_id)
+        if not files:
+            fail('This project has no reference files attached.')
+            return None
+        missing = [f['filename'] for f in files if not os.path.exists(f['path'])]
+        if missing:
+            fail(f"Reference file(s) missing on disk: {', '.join(missing)}")
+            return None
+
+        conn = get_active_connection()
+        embedding_model = (conn.get('embedding_model') or '').strip()
+        if not embedding_model:
+            fail('Set an embedding model in the Connection Editor first.')
+            return None
+
+        chunks = []
+        per_file_counts = {}
+        for f in files:
+            try:
+                file_chunks = build_reference_chunks(f['path'])
+            except Exception as e:
+                raise RuntimeError(f"Could not read '{f['filename']}': {e}") from e
+            per_file_counts[f['filename']] = len(file_chunks)
+            chunks.extend(file_chunks)
+        total = len(chunks)
+        with _reference_index_lock:
+            REFERENCE_INDEX_STATUS[project_id]['total'] = total
+
+        if total == 0:
+            fail('No text could be extracted from the reference file(s).')
+            return None
+
+        vectors = []
         for start in range(0, total, REFERENCE_EMBED_BATCH):
             batch = chunks[start:start + REFERENCE_EMBED_BATCH]
             vectors.extend(embed_texts([c['text'] for c in batch], embedding_model, conn=conn))
             with _reference_index_lock:
                 REFERENCE_INDEX_STATUS[project_id]['done'] = min(start + REFERENCE_EMBED_BATCH, total)
     except Exception as e:
-        with _reference_index_lock:
-            REFERENCE_INDEX_STATUS[project_id]['status']  = 'error'
-            REFERENCE_INDEX_STATUS[project_id]['message'] = str(e)
-        raise
+        fail(str(e))
+        return None
 
     index_dir = _reference_index_dir(project_id)
     os.makedirs(index_dir, exist_ok=True)

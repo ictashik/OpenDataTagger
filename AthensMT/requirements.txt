@@ -6,3 +6,4 @@ numpy
 openai
 Pillow
 pypdf
+cryptography  # pypdf needs this to read AES-encrypted PDFs (common for "protected" exports)
