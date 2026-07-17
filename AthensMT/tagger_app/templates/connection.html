@@ -59,6 +59,26 @@
             </datalist>
         </div>
 
+        <div>
+            <label class="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
+                Embedding Model <span class="text-gray-400 font-normal">(optional — enables retrieval-augmented tagging)</span>
+            </label>
+            <input id="inp-embedding-model" type="text" list="embedding-model-history" placeholder="nomic-embed-text"
+                value="{{ active.embedding_model }}"
+                class="w-full px-3 py-2 rounded-md border border-gray-300 dark:border-gray-600
+                       bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100
+                       focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm">
+            <datalist id="embedding-model-history">
+                {% for m in unique_embedding_models %}
+                <option value="{{ m }}">{{ m }}</option>
+                {% endfor %}
+            </datalist>
+            <p class="text-xs text-gray-400 dark:text-gray-500 mt-1">
+                Used to ground text tags against a project's uploaded reference dataset. Leave blank to disable
+                retrieval — tagging still works normally without it.
+            </p>
+        </div>
+
         <!-- Action row -->
         <div class="flex items-center gap-3 pt-1">
             <button onclick="testConnection()"
@@ -89,6 +109,7 @@
                     <th class="px-6 py-3 text-left">Host</th>
                     <th class="px-6 py-3 text-left">Port</th>
                     <th class="px-6 py-3 text-left">Model</th>
+                    <th class="px-6 py-3 text-left">Embedding Model</th>
                     <th class="px-6 py-3 text-left">Last Used</th>
                     <th class="px-6 py-3"></th>
                 </tr>
@@ -99,9 +120,10 @@
                     <td class="px-6 py-3 font-mono text-gray-700 dark:text-gray-300">{{ conn.host }}</td>
                     <td class="px-6 py-3 font-mono text-gray-700 dark:text-gray-300">{{ conn.port }}</td>
                     <td class="px-6 py-3 text-gray-700 dark:text-gray-300">{{ conn.model }}</td>
+                    <td class="px-6 py-3 text-gray-700 dark:text-gray-300">{{ conn.embedding_model|default:"—" }}</td>
                     <td class="px-6 py-3 text-gray-400 text-xs">{{ conn.last_used|slice:":16" }}</td>
                     <td class="px-6 py-3 text-right">
-                        <button onclick="loadConn('{{ conn.host }}','{{ conn.port }}','{{ conn.model }}')"
+                        <button onclick="loadConn('{{ conn.host }}','{{ conn.port }}','{{ conn.model }}','{{ conn.embedding_model }}')"
                             class="text-indigo-500 hover:text-indigo-700 dark:hover:text-indigo-300 text-xs font-medium">
                             Use
                         </button>
@@ -116,10 +138,11 @@
 </div>
 
 <script>
-    function loadConn(host, port, model) {
+    function loadConn(host, port, model, embeddingModel) {
         document.getElementById('inp-host').value = host;
         document.getElementById('inp-port').value = port;
         document.getElementById('inp-model').value = model;
+        document.getElementById('inp-embedding-model').value = embeddingModel || '';
         window.scrollTo({ top: 0, behavior: 'smooth' });
     }
 
@@ -135,6 +158,7 @@
         const host  = document.getElementById('inp-host').value.trim();
         const port  = document.getElementById('inp-port').value.trim();
         const model = document.getElementById('inp-model').value.trim();
+        const embeddingModel = document.getElementById('inp-embedding-model').value.trim();
 
         if (!host || !port || !model) {
             showStatus('Please fill in all fields.', false);
@@ -145,6 +169,7 @@
         form.append('host', host);
         form.append('port', port);
         form.append('model', model);
+        form.append('embedding_model', embeddingModel);
         form.append('csrfmiddlewaretoken', '{{ csrf_token }}');
 
         try {

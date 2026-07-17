@@ -219,6 +219,72 @@
             </p>
         </div>
 
+        {% if mode == 'text' %}
+        <!-- ── Reference Dataset(s) (retrieval-augmented tagging) ── -->
+        <div class="bg-white dark:bg-gray-800 rounded-lg shadow p-6" id="reference-data-card">
+            <div class="flex items-center justify-between mb-1">
+                <h2 class="text-base font-semibold text-gray-800 dark:text-gray-100">Reference Data</h2>
+                <span id="ref-status-badge" class="text-xs font-medium px-2 py-0.5 rounded-full
+                    {% if reference_ready %}bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300
+                    {% elif reference_stale or reference_files %}bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300
+                    {% else %}bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400{% endif %}">
+                    {% if reference_ready %}Ready — {{ reference_chunk_count }} chunks indexed
+                    {% elif reference_stale %}Rebuild needed
+                    {% elif reference_files %}~{{ reference_chunk_count }} chunks to process
+                    {% else %}No files attached{% endif %}
+                </span>
+            </div>
+            <p class="text-xs text-gray-500 dark:text-gray-400 mb-3">
+                Attach bulk data to ground text tags against — a canonical values table (CSV) too large for a
+                prompt, or a standards document (TXT/MD/PDF). Add as many files as you like; build one combined
+                index, then any tag below can ground its answer against all of them (and record what it
+                matched, for reviewing data quality).
+            </p>
+
+            {% if reference_files %}
+            <div class="border border-gray-200 dark:border-gray-700 rounded-md divide-y divide-gray-100 dark:divide-gray-700 mb-3" id="reference-files-table">
+                {% for f in reference_files %}
+                <div class="flex items-center gap-3 px-3 py-2 text-sm" data-filename="{{ f.filename }}">
+                    <span class="text-[10px] font-mono uppercase px-1.5 py-0.5 rounded flex-shrink-0
+                        {% if f.type == 'csv' %}bg-indigo-50 text-indigo-600 dark:bg-indigo-900/30 dark:text-indigo-300
+                        {% else %}bg-amber-50 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300{% endif %}">
+                        {% if f.type == 'csv' %}structured{% else %}unstructured{% endif %}
+                    </span>
+                    <span class="font-mono text-gray-700 dark:text-gray-300 truncate flex-1" title="{{ f.filename }}">{{ f.filename }}</span>
+                    <span class="text-gray-400 text-xs flex-shrink-0">{{ f.size_human }}</span>
+                    <span class="text-gray-400 text-xs flex-shrink-0 w-20 text-right">
+                        {% if f.chunk_count is not None %}{{ f.chunk_count }} chunks{% else %}pending{% endif %}
+                    </span>
+                    <button type="button" class="remove-ref-file-btn text-red-400 hover:text-red-600 text-xs font-medium flex-shrink-0"
+                        data-filename="{{ f.filename }}">Remove</button>
+                </div>
+                {% endfor %}
+            </div>
+            {% endif %}
+
+            {% if not embedding_model %}
+            <p class="text-xs text-amber-600 dark:text-amber-400 mb-3">
+                Set an embedding model in the <a href="{% url 'connection_editor' %}" class="underline">Connection Editor</a> first — Ollama serves embeddings from the same host/port already configured for tagging.
+            </p>
+            {% endif %}
+
+            <div class="flex items-center gap-3 flex-wrap">
+                <label class="px-4 py-1.5 rounded-md border border-gray-300 dark:border-gray-600 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 cursor-pointer transition">
+                    + Add files
+                    <input type="file" id="add-reference-files-input" multiple accept=".csv,.txt,.md,.pdf" class="hidden">
+                </label>
+                <button type="button" id="build-index-btn" {% if not embedding_model or not reference_files %}disabled{% endif %}
+                    class="px-4 py-1.5 rounded-md bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-medium transition">
+                    {% if reference_ready %}Rebuild Index{% else %}Build Index{% endif %}
+                </button>
+                <span id="build-index-progress" class="hidden text-xs text-gray-500 dark:text-gray-400"></span>
+            </div>
+            <div id="build-index-progress-bar-wrap" class="hidden mt-2 h-1.5 rounded-full bg-gray-100 dark:bg-gray-700 overflow-hidden">
+                <div id="build-index-progress-bar" class="h-full bg-indigo-500" style="width:0%"></div>
+            </div>
+        </div>
+        {% endif %}
+
         {% if mode == 'image' %}
         <!-- ── Step 2: Image Output Settings ── -->
         <div class="bg-white dark:bg-gray-800 rounded-lg shadow p-6" id="image-settings-card">
@@ -307,6 +373,7 @@
                 <div class="tag-card border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden bg-gray-50 dark:bg-gray-900"
                      data-saved-cols="{{ entry.InputColumns }}"
                      data-image-params="{{ entry.ImageParams }}"
+                     data-retrieval-config="{{ entry.RetrievalConfig }}"
                      data-node-x="{{ entry.NodeX }}"
                      data-node-y="{{ entry.NodeY }}">
                     <input type="hidden" name="node_x" class="node-x-hidden" value="{{ entry.NodeX }}">
@@ -406,6 +473,7 @@
                 <div class="tag-card border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden bg-gray-50 dark:bg-gray-900"
                      data-saved-cols=""
                      data-image-params=""
+                     data-retrieval-config=""
                      data-node-x=""
                      data-node-y="">
                     <input type="hidden" name="node_x" class="node-x-hidden" value="">
@@ -526,6 +594,7 @@
 <script>
     var PROJECT_MODE = "{{ mode|default:'text' }}";
     var ROW_COUNT = {{ row_count|default:0 }};
+    var RETRIEVAL_READY = {{ reference_ready|yesno:"true,false" }};
 </script>
 
 <script>
@@ -1023,12 +1092,53 @@ function enhanceCardForImage(card) {
     updateImageParams(card);
 }
 
+/* ═══ Text mode: per-card retrieval (grounding) controls ═══════ */
+function enhanceCardForRetrieval(card) {
+    if (PROJECT_MODE === 'image' || !RETRIEVAL_READY) return;
+    if (card.querySelector('.retrieval-section')) return;
+
+    var saved = {};
+    try { saved = JSON.parse(card.dataset.retrievalConfig || '{}') || {}; } catch (e) { saved = {}; }
+
+    var sec = document.createElement('div');
+    sec.className = 'retrieval-section px-4 py-3 bg-white dark:bg-gray-800 border-t border-gray-200 dark:border-gray-700';
+    var h = '';
+    h += '<label class="flex items-center gap-2 cursor-pointer select-none">';
+    h += '  <input type="checkbox" class="retrieval-enabled-cb rounded accent-indigo-500"' + (saved.enabled ? ' checked' : '') + '>';
+    h += '  <span class="text-xs font-medium text-gray-500 dark:text-gray-400">Ground with reference data</span>';
+    h += '</label>';
+    h += '<div class="retrieval-topk-row mt-2 flex items-center gap-2"' + (saved.enabled ? '' : ' style="display:none"') + '>';
+    h += '  <span class="text-xs text-gray-400">Top</span>';
+    h += '  <input type="number" min="1" max="20" class="retrieval-topk-input w-16 px-2 py-1 rounded border border-gray-300 dark:border-gray-600 text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100" value="' + (saved.top_k || 3) + '">';
+    h += '  <span class="text-xs text-gray-400">matches, appended to the prompt as reference context.</span>';
+    h += '</div>';
+    h += '<input type="hidden" name="retrieval_config" class="retrieval-config-hidden" value="">';
+    sec.innerHTML = h;
+    card.appendChild(sec);
+
+    sec.querySelector('.retrieval-enabled-cb').addEventListener('change', function() {
+        sec.querySelector('.retrieval-topk-row').style.display = this.checked ? '' : 'none';
+        updateRetrievalConfig(card);
+    });
+    sec.querySelector('.retrieval-topk-input').addEventListener('input', function() { updateRetrievalConfig(card); });
+    updateRetrievalConfig(card);
+}
+
+function updateRetrievalConfig(card) {
+    var sec = card.querySelector('.retrieval-section');
+    if (!sec) return;
+    var enabled = sec.querySelector('.retrieval-enabled-cb').checked;
+    var topK = parseInt(sec.querySelector('.retrieval-topk-input').value, 10) || 3;
+    sec.querySelector('.retrieval-config-hidden').value = JSON.stringify({enabled: enabled, top_k: topK});
+}
+
 document.getElementById('add-tag-btn').addEventListener('click', function() {
     var newCard = makeTagCard();
     document.getElementById('tag-container').appendChild(newCard);
     refreshCardBadges();
     rebuildTagChips(newCard);
     enhanceCardForImage(newCard);
+    enhanceCardForRetrieval(newCard);
     // Condition toggle starts unchecked — disable visible inputs so only hidden fallbacks submit
     var initVisibles = newCard.querySelectorAll('.cond-builder input:not(.send-ctx-cb), .cond-builder select');
     initVisibles.forEach(function(v) { v.disabled = true; });
@@ -1264,19 +1374,122 @@ picker.addEventListener('click', function(e) { var item = e.target.closest('.pic
 picker.addEventListener('mouseover', function(e) { var item = e.target.closest('.picker-item'); if (item) { pickerIdx = parseInt(item.dataset.idx, 10); highlightPicker(pickerIdx); } });
 document.addEventListener('click', function(e) { if (!picker.contains(e.target) && !e.target.classList.contains('prompt-ta')) hidePicker(); });
 
+/* ═══ Reference data: file list management + index build (progress-polled, ETA-aware) ═══ */
+(function() {
+    var btn = document.getElementById('build-index-btn');
+    if (!btn) return; // not a text-mode project
+    var prog    = document.getElementById('build-index-progress');
+    var barWrap = document.getElementById('build-index-progress-bar-wrap');
+    var bar     = document.getElementById('build-index-progress-bar');
+
+    function setBar(done, total) {
+        barWrap.classList.remove('hidden');
+        bar.style.width = (total > 0 ? Math.min(100, Math.round(done / total * 100)) : 0) + '%';
+    }
+
+    function poll() {
+        fetch("{% url 'reference_index_status' %}").then(function(r) { return r.json(); }).then(function(d) {
+            if (!d.success) { prog.textContent = 'Failed: ' + (d.error || 'unknown error'); btn.disabled = false; return; }
+            if (d.status === 'running') {
+                setBar(d.done, d.total);
+                var eta = (d.remaining !== null && d.remaining !== undefined)
+                    ? ' — ~' + formatEstSeconds(d.remaining) + ' remaining' : '';
+                prog.textContent = 'Embedding ' + d.done + '/' + d.total + ' chunks' + eta;
+                setTimeout(poll, 800);
+            } else if (d.status === 'error') {
+                prog.textContent = 'Failed: ' + (d.message || 'unknown error');
+                btn.disabled = false;
+            } else {
+                setBar(d.total, d.total || 1);
+                prog.textContent = 'Done — ' + d.total + ' chunks indexed. Reloading…';
+                setTimeout(function() { location.reload(); }, 700);
+            }
+        }).catch(function() { prog.textContent = 'Status check failed.'; btn.disabled = false; });
+    }
+
+    btn.addEventListener('click', function() {
+        btn.disabled = true;
+        prog.classList.remove('hidden');
+        prog.textContent = 'Starting…';
+        fetch("{% url 'build_reference_index' %}", { method: 'POST', headers: {'X-CSRFToken': getCsrfCookie()} })
+            .then(function(r) { return r.json(); })
+            .then(function(d) {
+                if (!d.success) { prog.textContent = 'Failed: ' + (d.error || 'unknown error'); btn.disabled = false; return; }
+                poll();
+            })
+            .catch(function() { prog.textContent = 'Request failed.'; btn.disabled = false; });
+    });
+
+    // Add more reference files without leaving the page — this is how a
+    // project accumulates as many files as the user wants, not just at
+    // initial upload.
+    var addInput = document.getElementById('add-reference-files-input');
+    if (addInput) {
+        addInput.addEventListener('change', function() {
+            if (!this.files.length) return;
+            var fd = new FormData();
+            var count = this.files.length;
+            Array.from(this.files).forEach(function(f) { fd.append('reference_files', f); });
+            prog.classList.remove('hidden');
+            prog.textContent = 'Uploading ' + count + ' file' + (count === 1 ? '' : 's') + '…';
+            fetch("{% url 'add_reference_files' %}", { method: 'POST', headers: {'X-CSRFToken': getCsrfCookie()}, body: fd })
+                .then(function(r) { return r.json(); })
+                .then(function(d) {
+                    if (!d.success) { prog.textContent = 'Failed: ' + (d.error || 'unknown error'); return; }
+                    location.reload();
+                })
+                .catch(function() { prog.textContent = 'Upload failed.'; });
+        });
+    }
+
+    // Remove a file — event delegation, since the list is server-rendered.
+    var card = document.getElementById('reference-data-card');
+    if (card) {
+        card.addEventListener('click', function(e) {
+            var removeBtn = e.target.closest('.remove-ref-file-btn');
+            if (!removeBtn) return;
+            var filename = removeBtn.dataset.filename;
+            removeBtn.disabled = true;
+            removeBtn.textContent = 'Removing…';
+            var fd = new FormData();
+            fd.append('filename', filename);
+            fetch("{% url 'remove_reference_file' %}", { method: 'POST', headers: {'X-CSRFToken': getCsrfCookie()}, body: fd })
+                .then(function(r) { return r.json(); })
+                .then(function(d) {
+                    if (!d.success) {
+                        alert('Failed: ' + (d.error || 'unknown error'));
+                        removeBtn.disabled = false;
+                        removeBtn.textContent = 'Remove';
+                        return;
+                    }
+                    location.reload();
+                })
+                .catch(function() {
+                    alert('Request failed.');
+                    removeBtn.disabled = false;
+                    removeBtn.textContent = 'Remove';
+                });
+        });
+    }
+})();
+
 /* ═══ Init ══════════════════════════════════════════════════════ */
 refreshCardBadges();
 rebuildDatalist();
 
-// Ensure every image card's params are serialised right before submit.
+// Ensure every image/retrieval card's params are serialised right before submit.
 document.getElementById('main-form').addEventListener('submit', function() {
-    document.querySelectorAll('.tag-card').forEach(updateImageParams);
+    document.querySelectorAll('.tag-card').forEach(function(card) {
+        updateImageParams(card);
+        updateRetrievalConfig(card);
+    });
 });
 
 // Build per-tag chips for all server-rendered cards
 document.querySelectorAll('.tag-card').forEach(function(card) {
     rebuildTagChips(card);
     enhanceCardForImage(card);
+    enhanceCardForRetrieval(card);
 
     // Init condition toggle state
     var toggle   = card.querySelector('.cond-toggle');

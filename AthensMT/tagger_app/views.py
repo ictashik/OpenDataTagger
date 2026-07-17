@@ -71,6 +71,15 @@ from .utils import (
     tagged_path_for_project,
     build_gallery_items,
     build_gallery_zip,
+    REFERENCE_INDEX_STATUS,
+    build_reference_index,
+    get_reference_manifest,
+    reference_index_is_stale,
+    list_reference_files,
+    add_reference_file,
+    remove_reference_file,
+    estimate_reference_chunk_count,
+    _human_bytes,
 )
 
 
@@ -196,12 +205,36 @@ def delete_project_view(request, project_id):
 
 # ─── Upload ──────────────────────────────────────────────────────────────────
 
+def _save_reference_files(project_id, project_dir, uploaded_files):
+    """Save each uploaded reference file into media/<project_id>/reference/
+    and register it in the RAG project registry (rag_projects.json) — the
+    entry point both the initial Upload page and Define Columns' "Add
+    files" action go through, so a project can accumulate as many
+    reference files as the user wants, at any time."""
+    ref_dir = os.path.join(project_dir, 'reference')
+    os.makedirs(ref_dir, exist_ok=True)
+    fs = FileSystemStorage(location=ref_dir)
+    for uf in uploaded_files:
+        name = uf.name
+        base, ext = os.path.splitext(name)
+        candidate = name
+        n = 1
+        while os.path.exists(os.path.join(ref_dir, candidate)):
+            candidate = f"{base}_{n}{ext}"
+            n += 1
+        fs.save(candidate, uf)
+        path = convert_upload_to_csv(os.path.join(ref_dir, candidate))
+        file_type = os.path.splitext(path)[1].lower().lstrip('.')
+        add_reference_file(project_id, os.path.basename(path), path, file_type, os.path.getsize(path))
+
+
 def upload_file_view(request):
     if request.method == 'POST':
         form = UploadForm(request.POST, request.FILES)
         if form.is_valid():
-            csv_file    = form.cleaned_data['csv_file']
-            config_file = form.cleaned_data.get('config_file')
+            csv_file        = form.cleaned_data['csv_file']
+            config_file     = form.cleaned_data.get('config_file')
+            reference_files = request.FILES.getlist('reference_files')
             mode        = 'image' if request.POST.get('mode') == 'image' else 'text'
 
             # Each project gets its own media/<project_id>/ folder so two
@@ -228,6 +261,9 @@ def upload_file_view(request):
                 config_path = convert_upload_to_csv(config_path)
             else:
                 config_path = None
+
+            if reference_files:
+                _save_reference_files(project_id, project_dir, reference_files)
 
             request.session['csv_filepath']    = csv_path
             request.session['config_filepath'] = config_path
@@ -280,18 +316,20 @@ def define_columns_view(request):
         send_contexts    = request.POST.getlist('send_context')
         tag_input_cols   = request.POST.getlist('tag_input_cols')
         image_params     = request.POST.getlist('image_params')
+        retrieval_configs = request.POST.getlist('retrieval_config')
         node_xs          = request.POST.getlist('node_x')
         node_ys          = request.POST.getlist('node_y')
         image_naming_col = request.POST.get('image_naming_column', '').strip()
         image_format     = (request.POST.get('image_format', '').strip() or 'png').lower()
 
         new_config = []
-        # zip_longest: image_params/node_x/node_y are absent in some contexts (fills
-        # to ''); other arrays are always one-per-card thanks to the mirrored-hidden inputs.
-        for oc, pt, cf, cop, cv, dv, sc, tic, ip, nx, ny in zip_longest(
+        # zip_longest: image_params/node_x/node_y/retrieval_config are absent in some
+        # contexts (fills to ''); other arrays are always one-per-card thanks to the
+        # mirrored-hidden inputs.
+        for oc, pt, cf, cop, cv, dv, sc, tic, ip, rc, nx, ny in zip_longest(
             output_cols, prompts,
             condition_fields, condition_ops, condition_values, default_values,
-            send_contexts, tag_input_cols, image_params, node_xs, node_ys,
+            send_contexts, tag_input_cols, image_params, retrieval_configs, node_xs, node_ys,
             fillvalue='',
         ):
             if (oc or '').strip() and (pt or '').strip():
@@ -305,6 +343,7 @@ def define_columns_view(request):
                     "SendContext":    (sc or '').strip(),
                     "InputColumns":   (tic or '').strip(),
                     "ImageParams":    (ip or '').strip(),
+                    "RetrievalConfig": (rc or '').strip(),
                     "NodeX":          (nx or '').strip(),
                     "NodeY":          (ny or '').strip(),
                 })
@@ -328,6 +367,24 @@ def define_columns_view(request):
 
         return redirect('tagging')
 
+    project_id = request.session.get('project_id')
+    proj       = get_project(project_id) if project_id else None
+
+    reference_files = list_reference_files(project_id) if project_id else []
+    for f in reference_files:
+        f['size_human'] = _human_bytes(f.get('size_bytes', 0))
+    reference_manifest = get_reference_manifest(project_id) if (project_id and reference_files) else None
+    if reference_manifest:
+        # Already indexed — the manifest's count is authoritative, no need
+        # to re-parse every file on every page load.
+        reference_chunk_count = reference_manifest.get('chunk_count', 0)
+    elif reference_files:
+        # Not indexed yet (or files changed since the last build) — cheap
+        # pure-parsing preview of how much Build Index will process.
+        reference_chunk_count, _ = estimate_reference_chunk_count(project_id)
+    else:
+        reference_chunk_count = 0
+
     context = {
         'columns':       all_columns,
         'columns_json':  json.dumps(all_columns),
@@ -339,6 +396,14 @@ def define_columns_view(request):
         'schedulers':    [],
         'aspect_presets': [],
         'row_count':     len(df),
+        'reference_files': reference_files,
+        'reference_ready':    bool(reference_manifest) and not reference_index_is_stale(project_id) if reference_files else False,
+        # "stale" is distinct from "never built" — only true once a manifest
+        # exists but no longer matches the active embedding model, so the
+        # UI can tell "Not indexed yet" apart from "Rebuild needed".
+        'reference_stale':    bool(reference_manifest) and reference_index_is_stale(project_id) if reference_files else False,
+        'reference_chunk_count': reference_chunk_count,
+        'embedding_model':    (get_active_connection().get('embedding_model') or ''),
     }
     if mode == 'image':
         context['image_models']   = get_downloaded_image_models()
@@ -356,8 +421,6 @@ def define_columns_view(request):
         }
         context['dup_counts_json'] = json.dumps(dup_counts)
 
-        project_id = request.session.get('project_id')
-        proj = get_project(project_id) if project_id else None
         context['image_naming_column'] = (proj.get('image_naming_column', '') if proj else '') or ''
         context['image_format'] = (proj.get('image_format', '') if proj else '') or 'png'
     return render(request, 'define_columns.html', context)
@@ -415,6 +478,81 @@ def estimate_image_view(request):
         'total_estimate_sec': round(elapsed_sec * row_count * num_images, 1),
         'rendered_prompt':    rendered_prompt,
     })
+
+
+# ─── Reference data (retrieval) ──────────────────────────────────────────────
+
+def build_reference_index_view(request):
+    """Kick off the one-time (per embedding model, per file set) index
+    build for a project's attached reference file(s) — one combined index
+    across all of them. Mirrors bulk_retry_view's background-thread +
+    polled-status pattern."""
+    if request.method != 'POST':
+        return JsonResponse({'success': False, 'error': 'POST required.'}, status=400)
+
+    project_id = request.session.get('project_id')
+    if not project_id:
+        return JsonResponse({'success': False, 'error': 'No project in session.'}, status=400)
+
+    t = threading.Thread(target=build_reference_index, args=(project_id,), daemon=True)
+    t.start()
+    return JsonResponse({'success': True})
+
+
+def reference_index_status_view(request):
+    project_id = request.session.get('project_id')
+    status = REFERENCE_INDEX_STATUS.get(project_id) if project_id else None
+    if not status:
+        manifest = get_reference_manifest(project_id) if project_id else None
+        if manifest:
+            return JsonResponse({'success': True, 'status': 'finished', 'done': manifest['chunk_count'],
+                                 'total': manifest['chunk_count'], 'message': '',
+                                 'elapsed': 0, 'remaining': None})
+        return JsonResponse({'success': False, 'error': 'No index job for this project.'}, status=400)
+
+    done, total = status['done'], status['total']
+    elapsed = time.time() - status.get('start_time', time.time())
+    remaining = ((elapsed / done) * (total - done)) if done > 0 and total > done else None
+    return JsonResponse({'success': True, **status, 'elapsed': elapsed, 'remaining': remaining})
+
+
+def add_reference_files_view(request):
+    """Attach more reference file(s) to an existing project — the ongoing
+    counterpart to the Upload page's initial attachment, so a project can
+    accumulate as many reference files as the user wants over time."""
+    if request.method != 'POST':
+        return JsonResponse({'success': False, 'error': 'POST required.'}, status=400)
+
+    project_id = request.session.get('project_id')
+    if not project_id:
+        return JsonResponse({'success': False, 'error': 'No project in session.'}, status=400)
+
+    uploaded = request.FILES.getlist('reference_files')
+    if not uploaded:
+        return JsonResponse({'success': False, 'error': 'No files provided.'}, status=400)
+
+    project_dir = os.path.join(settings.MEDIA_ROOT, project_id)
+    os.makedirs(project_dir, exist_ok=True)
+    _save_reference_files(project_id, project_dir, uploaded)
+    return JsonResponse({'success': True, 'files': list_reference_files(project_id)})
+
+
+def remove_reference_file_view(request):
+    """Detach one reference file from a project (and delete it from disk).
+    Drops the existing index outright (see utils.remove_reference_file) —
+    rebuilding is a deliberate next step, not automatic, since it costs
+    real embedding time."""
+    if request.method != 'POST':
+        return JsonResponse({'success': False, 'error': 'POST required.'}, status=400)
+
+    project_id = request.session.get('project_id')
+    filename   = request.POST.get('filename', '').strip()
+    if not project_id or not filename:
+        return JsonResponse({'success': False, 'error': 'project and filename are required.'}, status=400)
+
+    if not remove_reference_file(project_id, filename):
+        return JsonResponse({'success': False, 'error': 'No such reference file.'}, status=404)
+    return JsonResponse({'success': True, 'files': list_reference_files(project_id)})
 
 
 # ─── Tagging ─────────────────────────────────────────────────────────────────
@@ -1042,18 +1180,23 @@ def connection_editor_view(request):
         host  = request.POST.get('host', '').strip()
         port  = request.POST.get('port', '').strip()
         model = request.POST.get('model', '').strip()
+        embedding_model = request.POST.get('embedding_model', '').strip()
         if host and port and model:
-            save_connection(host, port, model)
+            save_connection(host, port, model, embedding_model)
             return JsonResponse({'success': True, 'message': 'Connection saved.'})
         return JsonResponse({'success': False, 'message': 'Host, port, and model are all required.'}, status=400)
 
     connections   = load_connections()
     active        = get_active_connection()
     unique_models = list(dict.fromkeys(c['model'] for c in connections))
+    unique_embedding_models = list(dict.fromkeys(
+        c['embedding_model'] for c in connections if c.get('embedding_model')
+    ))
     return render(request, 'connection.html', {
         'connections':   connections,
         'active':        active,
         'unique_models': unique_models,
+        'unique_embedding_models': unique_embedding_models,
     })
 
 

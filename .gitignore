@@ -2,3 +2,4 @@
 .env
 .run/
 *.csv
+rag_projects.json
