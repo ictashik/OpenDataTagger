@@ -185,8 +185,18 @@ def embed_texts(texts, embedding_model, conn=None, timeout=60):
     payload = {'model': embedding_model, 'input': list(texts)}
     data = json.dumps(payload).encode('utf-8')
     req = urllib.request.Request(url, data=data, headers={'Content-Type': 'application/json'}, method='POST')
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        result = json.loads(resp.read().decode('utf-8'))
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            result = json.loads(resp.read().decode('utf-8'))
+    except urllib.error.HTTPError as e:
+        # Ollama puts the actually useful message in the response body (e.g.
+        # "this model does not support embeddings") — str(e) alone is just
+        # "HTTP Error 501: Not Implemented", which loses it.
+        try:
+            detail = json.loads(e.read().decode('utf-8')).get('error', str(e))
+        except Exception:
+            detail = str(e)
+        raise RuntimeError(f"Embedding request failed: {detail}") from e
     return result.get('embeddings', [])
 
 
