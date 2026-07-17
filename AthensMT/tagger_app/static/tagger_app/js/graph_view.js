@@ -32,7 +32,7 @@
     var canvas = { scale: 1, tx: 40, ty: 40 };
 
     var MIN_SCALE = 0.3, MAX_SCALE = 1.75;
-    var NODE_START_X = 360, NODE_SPACING_X = 460, NODE_START_Y = 40;
+    var NODE_START_X = 280, NODE_SPACING_X = 440, NODE_START_Y = 40;
 
     /* ═══ Per-column color coding — every distinct column (CSV or a tag's
        own output) gets a consistent color, applied to its source/output pin
@@ -79,13 +79,31 @@
         if (hy) hy.value = String(y);
     }
 
-    function autoLayoutIndex(idx) {
-        return { x: NODE_START_X + idx * NODE_SPACING_X, y: NODE_START_Y };
+    /* Auto-layout wraps nodes into rows sized to the actual available canvas
+       width — a snake/boustrophedon pattern (row 0 left-to-right, row 1
+       right-to-left, ...) so it reads as a tidy zig-zag as pipeline order
+       snakes down the screen, rather than one ever-growing horizontal line.
+       Purely a starting arrangement — the user can drag from there. */
+    var NODE_SPACING_Y = 520;
+
+    function columnsForViewport() {
+        var rect = tagViewport.getBoundingClientRect();
+        var availWidth = Math.max(NODE_SPACING_X, (rect.width || 1200) - NODE_START_X - 40);
+        return Math.max(1, Math.floor(availWidth / NODE_SPACING_X));
+    }
+
+    function autoLayoutIndex(idx, cols) {
+        cols = cols || columnsForViewport();
+        var row = Math.floor(idx / cols);
+        var colInRow = idx % cols;
+        var col = (row % 2 === 0) ? colInRow : (cols - 1 - colInRow);
+        return { x: NODE_START_X + col * NODE_SPACING_X, y: NODE_START_Y + row * NODE_SPACING_Y };
     }
 
     function initNodePositions() {
+        var cols = columnsForViewport();
         Array.from(tagContainer.querySelectorAll('.tag-card')).forEach(function (card, idx) {
-            var pos = getPos(card) || autoLayoutIndex(idx);
+            var pos = getPos(card) || autoLayoutIndex(idx, cols);
             setPos(card, pos.x, pos.y);
         });
     }
@@ -676,6 +694,13 @@
             applyCanvasTransform();
             if (window.__gvRedrawWires) window.__gvRedrawWires();
             if (!didInitialFit) { didInitialFit = true; fitView(); }
+        } else {
+            // tagContainer.style.transform is an inline style (pan/zoom), not
+            // scoped by the .graph-active class — left set, it would keep
+            // translating/scaling the whole card list in normal list-view
+            // flow (a stale zoom/pan silently shifting or scaling everything
+            // until a hard refresh). Clear it explicitly on the way out.
+            tagContainer.style.transform = '';
         }
         try { localStorage.setItem('odt_graph_view_mode', mode); } catch (e) {}
     }
