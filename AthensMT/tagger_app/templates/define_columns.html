@@ -1,9 +1,180 @@
 {% extends "base.html" %}
+{% load static %}
 
 {% block content %}
-<div class="max-w-4xl mx-auto py-8 space-y-6">
+<style>
+    /* ── Graph view (Define Columns) ─────────────────────────────── */
+    .view-toggle-btn {
+        padding: 0.3rem 0.85rem; font-size: 0.75rem; font-weight: 500;
+        border: 1px solid #d1d5db; background: #fff; color: #6b7280; cursor: pointer;
+    }
+    .view-toggle-btn:first-child { border-radius: 0.375rem 0 0 0.375rem; }
+    .view-toggle-btn:last-child  { border-radius: 0 0.375rem 0.375rem 0; border-left: none; }
+    .view-toggle-btn.active { background: #4f46e5; border-color: #4f46e5; color: #fff; }
+    @media (prefers-color-scheme: dark) {
+        .view-toggle-btn { background: #1f2937; border-color: #4b5563; color: #9ca3af; }
+        .view-toggle-btn.active { background: #4f46e5; border-color: #4f46e5; color: #fff; }
+    }
 
-    <div>
+    /* Graph mode is a chrome-less canvas: no header, just the sidebar and the
+       dotted view. The only visible controls are two small floating
+       clusters — an escape hatch top-left, and zoom/actions bottom-right —
+       both anchored to #tags-card (position:fixed in graph mode, see below),
+       so "bottom-right"/"top-left" always mean the canvas's own corners. */
+    #graph-toolbar {
+        display: none; flex-direction: column; gap: 0.4rem;
+        position: absolute; bottom: 1.25rem; right: 1.25rem; z-index: 41;
+        background: rgba(255,255,255,0.95); padding: 0.6rem; border-radius: 0.6rem;
+        border: 1px solid #e5e7eb; box-shadow: 0 4px 16px rgba(0,0,0,0.12);
+    }
+    #graph-toolbar.active { display: flex; }
+    .gv-toolbar-row { display: flex; align-items: center; gap: 0.4rem; }
+    .graph-toolbar-btn {
+        font-size: 0.75rem; padding: 0.25rem 0.6rem; border-radius: 0.375rem;
+        border: 1px solid #d1d5db; background: #fff; color: #374151; cursor: pointer;
+    }
+    #gv-start-tagging-btn {
+        font-size: 0.8rem; font-weight: 600; padding: 0.4rem 0.9rem; border-radius: 0.375rem;
+        border: none; background: #4f46e5; color: #fff; cursor: pointer; white-space: nowrap;
+    }
+    #gv-start-tagging-btn:hover { background: #4338ca; }
+    @media (prefers-color-scheme: dark) {
+        #graph-toolbar { background: rgba(31,41,55,0.95); border-color: #374151; }
+        .graph-toolbar-btn { background: #1f2937; border-color: #4b5563; color: #d1d5db; }
+    }
+
+    #gv-back-to-list-btn {
+        display: none; position: absolute; top: 1.25rem; left: 1.25rem; z-index: 41;
+        font-size: 0.75rem; font-weight: 500; padding: 0.3rem 0.85rem; border-radius: 0.375rem;
+        border: 1px solid #d1d5db; background: rgba(255,255,255,0.95); color: #374151; cursor: pointer;
+        box-shadow: 0 4px 16px rgba(0,0,0,0.12);
+    }
+    #tags-card.gv-fullscreen #gv-back-to-list-btn { display: block; }
+    @media (prefers-color-scheme: dark) {
+        #gv-back-to-list-btn { background: rgba(31,41,55,0.95); border-color: #4b5563; color: #d1d5db; }
+    }
+
+    /* Graph mode takes over the whole content area: the heading and the
+       (redundant — the source node already shows this) Global Context card
+       are hidden, and the tags card becomes a fixed full-screen overlay
+       with the canvas filling all remaining space via flex. */
+    #tags-card.gv-fullscreen {
+        position: fixed; top: 1.25rem; left: calc(16rem + 1.25rem); right: 1.25rem; bottom: 3rem;
+        z-index: 40; margin: 0; display: flex; flex-direction: column; overflow: hidden;
+    }
+    #tags-card.gv-fullscreen #tag-viewport { flex: 1 1 auto; min-height: 0; }
+
+    #tag-viewport { position: relative; }
+    #tag-viewport.graph-active {
+        overflow: hidden; height: 70vh; min-height: 480px;
+        border: 1px solid #e5e7eb; border-radius: 0.75rem;
+        background-color: #f9fafb;
+        background-image: radial-gradient(circle, #d1d5db 1px, transparent 1px);
+        background-size: 22px 22px;
+        cursor: grab;
+    }
+    #tag-viewport.graph-active.panning { cursor: grabbing; }
+    @media (prefers-color-scheme: dark) {
+        #tag-viewport.graph-active {
+            background-color: #111827;
+            background-image: radial-gradient(circle, #374151 1px, transparent 1px);
+        }
+    }
+
+    /* Explicit size: with only absolutely-positioned children, the container
+       would otherwise collapse to 0×0, and a 0-height SVG child silently
+       fails to paint its overflow content even with overflow:visible. */
+    #tag-container.graph-active { position: relative; transform-origin: 0 0; width: 8000px; height: 5000px; }
+    #tag-container.graph-active > .tag-card {
+        position: absolute; left: var(--nx, 0px); top: var(--ny, 0px);
+        width: 420px; margin: 0; max-height: 80vh; overflow-y: auto;
+    }
+    /* The whole card is a drag handle in graph mode (not just the header) —
+       every actual control gets its normal cursor back so it doesn't look
+       draggable where it isn't. */
+    #tag-container.graph-active > .tag-card { cursor: move; }
+    #tag-container.graph-active > .tag-card input,
+    #tag-container.graph-active > .tag-card textarea { cursor: text; }
+    #tag-container.graph-active > .tag-card select,
+    #tag-container.graph-active > .tag-card button,
+    #tag-container.graph-active > .tag-card label,
+    #tag-container.graph-active > .tag-card input[type="checkbox"] { cursor: pointer; }
+    .tag-card { position: relative; z-index: 1; }
+    #tag-container.graph-active > .tag-card.dragging-node {
+        z-index: 5; cursor: grabbing;
+        box-shadow: 0 0 0 2px #4f46e5, 0 8px 24px rgba(0,0,0,0.18);
+    }
+
+    #graph-wires-svg {
+        display: none; position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+        pointer-events: none; overflow: visible; z-index: 0;
+    }
+    #tag-container.graph-active #graph-wires-svg { display: block; }
+
+    #graph-source-node {
+        display: none; width: 220px; max-height: 70vh; overflow-y: auto;
+        background: #fff; border: 1px solid #e5e7eb; border-radius: 0.5rem;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+    }
+    @media (prefers-color-scheme: dark) {
+        #graph-source-node { background: #1f2937; border-color: #374151; }
+    }
+    #tag-container.graph-active #graph-source-node {
+        display: block; position: absolute; left: var(--nx, 40px); top: var(--ny, 40px); z-index: 1;
+    }
+    /* Each dot's color is per-column (inline style, see graph_view.js);
+       opacity — not color — shows whether it's in the global selection. */
+    .src-pin-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; cursor: crosshair; opacity: 0.4; }
+    .src-pin-dot.active { opacity: 1; }
+
+    .node-pin {
+        display: none; position: absolute; width: 14px; height: 14px; border-radius: 50%;
+        border: 2px solid #fff; cursor: crosshair; z-index: 2;
+    }
+    @media (prefers-color-scheme: dark) { .node-pin { border-color: #1f2937; } }
+    #tag-container.graph-active .node-pin { display: block; }
+    /* Kept just inside the card rather than straddling its edge (right/left
+       ±7px would sit exactly on the card's overflow-clip boundary —
+       overflow-y:auto on the card computes overflow-x to auto too per the
+       CSS overflow spec, and native mousedown hit-testing is unreliable
+       for a point exactly on that clip edge, even though it paints fine). */
+    .ctx-socket  { left: 3px; top: 20px; background: #4f46e5; }
+    .cond-socket { left: 3px; top: 44px; background: #f59e0b; }
+    .out-pin     { right: 3px; top: 20px; } /* background: per-column, set inline in graph_view.js */
+    .node-pin:hover { transform: scale(1.3); }
+
+    /* Stroke color is per-column (inline style, see graph_view.js) — only
+       the dash pattern (context vs condition) and selected-state override
+       are CSS. !important on .selected is needed since it must win over
+       each wire's own inline per-column color. */
+    .gv-wire { stroke-width: 2; fill: none; }
+    .gv-wire-cond { stroke-dasharray: 5 4; }
+    .gv-wire.selected { stroke: #ef4444 !important; stroke-width: 3 !important; stroke-dasharray: none !important; }
+    .gv-wire-temp { stroke: #9ca3af; stroke-width: 2; stroke-dasharray: 4 4; fill: none; pointer-events: none; }
+    .gv-wire-hit { stroke: transparent; stroke-width: 14; fill: none; pointer-events: stroke; cursor: pointer; }
+
+    .node-pin.gv-drop-target { transform: scale(1.6); box-shadow: 0 0 0 5px rgba(16,185,129,0.35); }
+
+    #gv-wire-delete-badge {
+        display: none; position: absolute; width: 20px; height: 20px; margin-left: -10px; margin-top: -10px;
+        border-radius: 50%; background: #ef4444; color: #fff; font-size: 13px; line-height: 1;
+        align-items: center; justify-content: center; cursor: pointer; z-index: 4; border: 2px solid #fff;
+    }
+
+    /* Image Settings starts collapsed in graph view only — it's a lot of
+       content (model/scheduler/LoRA/size controls) and graph view is
+       about seeing pipeline structure at a glance. List view is unaffected. */
+    .gv-img-collapse-btn { display: none; }
+    #tag-container.graph-active .gv-img-collapse-btn {
+        display: block; width: 100%; text-align: left; font-size: 11px; font-weight: 600;
+        color: #6b7280; padding: 0 0 8px; background: none; border: none; cursor: pointer;
+    }
+    @media (prefers-color-scheme: dark) { #tag-container.graph-active .gv-img-collapse-btn { color: #9ca3af; } }
+    #tag-container.graph-active .img-section.gv-collapsed > *:not(.gv-img-collapse-btn) { display: none; }
+</style>
+<div class="max-w-4xl mx-auto py-8 space-y-6" id="page-wrap">
+
+    <div id="page-heading">
         <h1 class="text-2xl font-semibold text-gray-900 dark:text-gray-100">Define Columns</h1>
         <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">
             Choose which columns give the AI context, then define what it should tag or generate.
@@ -14,7 +185,7 @@
         {% csrf_token %}
 
         <!-- ── Step 1: Global Input Context ── -->
-        <div class="bg-white dark:bg-gray-800 rounded-lg shadow p-6">
+        <div class="bg-white dark:bg-gray-800 rounded-lg shadow p-6" id="global-context-card">
             <div class="flex items-center justify-between mb-1">
                 <h2 class="text-base font-semibold text-gray-800 dark:text-gray-100">1. Global Context Columns</h2>
                 <div class="flex gap-2 text-xs">
@@ -50,7 +221,7 @@
 
         {% if mode == 'image' %}
         <!-- ── Step 2: Image Output Settings ── -->
-        <div class="bg-white dark:bg-gray-800 rounded-lg shadow p-6">
+        <div class="bg-white dark:bg-gray-800 rounded-lg shadow p-6" id="image-settings-card">
             <h2 class="text-base font-semibold text-gray-800 dark:text-gray-100 mb-1">2. Image Output Settings</h2>
             <p class="text-xs text-gray-500 dark:text-gray-400 mb-4">
                 Controls how generated image files are named and saved for this project.
@@ -86,8 +257,8 @@
         {% endif %}
 
         <!-- ── Step 3: Output Tag Definitions ── -->
-        <div class="bg-white dark:bg-gray-800 rounded-lg shadow p-6 space-y-4">
-            <div class="flex items-start justify-between">
+        <div class="bg-white dark:bg-gray-800 rounded-lg shadow p-6 space-y-4" id="tags-card">
+            <div class="flex items-start justify-between" id="tags-header-row">
                 <div>
                     <h2 class="text-base font-semibold text-gray-800 dark:text-gray-100">2. Output Tags &amp; Prompts</h2>
                     <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
@@ -96,20 +267,55 @@
                         to insert a column reference. Each tag has its own context columns — use <strong>Auto</strong> to detect from prompt references.
                     </p>
                 </div>
-                <button type="button" id="add-tag-btn"
-                    class="ml-4 flex-shrink-0 px-4 py-1.5 rounded-md bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium">
-                    + Add Tag
-                </button>
+                <div class="ml-4 flex-shrink-0 flex items-center gap-2">
+                    <div class="flex">
+                        <button type="button" id="view-list-btn" class="view-toggle-btn active">List View</button>
+                        <button type="button" id="view-graph-btn" class="view-toggle-btn">Graph View</button>
+                    </div>
+                    <button type="button" id="add-tag-btn"
+                        class="px-4 py-1.5 rounded-md bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium">
+                        + Add Tag
+                    </button>
+                </div>
             </div>
 
+            <!-- Graph-mode-only floating chrome — no header, just the sidebar and
+                 the full dotted canvas, with a minimal escape hatch (top-left) and
+                 action cluster (bottom-right, see CSS for #graph-toolbar). -->
+            <button type="button" id="gv-back-to-list-btn" title="Back to List View">← List View</button>
+
+            <div id="graph-toolbar">
+                <div class="gv-toolbar-row">
+                    <button type="button" id="zoom-out-btn" class="graph-toolbar-btn" title="Zoom out">−</button>
+                    <span id="zoom-pct" class="text-xs text-gray-500 dark:text-gray-400 w-10 text-center">100%</span>
+                    <button type="button" id="zoom-in-btn" class="graph-toolbar-btn" title="Zoom in">+</button>
+                    <button type="button" id="fit-view-btn" class="graph-toolbar-btn">Fit view</button>
+                </div>
+                <div class="gv-toolbar-row">
+                    <button type="button" id="gv-add-tag-btn" class="graph-toolbar-btn">+ Add Tag</button>
+                    <button type="submit" id="gv-start-tagging-btn">Start Tagging →</button>
+                </div>
+            </div>
+
+            <div id="tag-viewport">
             <div id="tag-container" class="space-y-4">
+                <svg id="graph-wires-svg"></svg>
+                <div id="graph-source-node"></div>
+                <div id="gv-wire-delete-badge" title="Delete this connection">&times;</div>
                 {% for entry in config_data %}
                 {% with has_cond=entry.ConditionField %}
                 <div class="tag-card border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden bg-gray-50 dark:bg-gray-900"
                      data-saved-cols="{{ entry.InputColumns }}"
-                     data-image-params="{{ entry.ImageParams }}">
+                     data-image-params="{{ entry.ImageParams }}"
+                     data-node-x="{{ entry.NodeX }}"
+                     data-node-y="{{ entry.NodeY }}">
+                    <input type="hidden" name="node_x" class="node-x-hidden" value="{{ entry.NodeX }}">
+                    <input type="hidden" name="node_y" class="node-y-hidden" value="{{ entry.NodeY }}">
+                    <div class="node-pin ctx-socket" title="Context columns — drag a wire here to add a column"></div>
+                    <div class="node-pin cond-socket" title="Condition column — drag a wire here to set the condition"></div>
+                    <div class="node-pin out-pin" title="Output column"></div>
                     <!-- Card header -->
-                    <div class="flex items-center gap-3 px-4 py-3 border-b border-gray-200 dark:border-gray-700">
+                    <div class="node-header flex items-center gap-3 px-4 py-3 border-b border-gray-200 dark:border-gray-700">
                         <span class="card-badge flex-shrink-0 text-xs font-mono text-indigo-400 bg-indigo-50 dark:bg-indigo-900/30 border border-indigo-200 dark:border-indigo-700 px-2 py-0.5 rounded">Step</span>
                         <input type="text" name="output_column"
                             class="flex-1 px-3 py-1.5 rounded-md border border-gray-300 dark:border-gray-600
@@ -199,8 +405,15 @@
                 {% if not config_data %}
                 <div class="tag-card border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden bg-gray-50 dark:bg-gray-900"
                      data-saved-cols=""
-                     data-image-params="">
-                    <div class="flex items-center gap-3 px-4 py-3 border-b border-gray-200 dark:border-gray-700">
+                     data-image-params=""
+                     data-node-x=""
+                     data-node-y="">
+                    <input type="hidden" name="node_x" class="node-x-hidden" value="">
+                    <input type="hidden" name="node_y" class="node-y-hidden" value="">
+                    <div class="node-pin ctx-socket" title="Context columns — drag a wire here to add a column"></div>
+                    <div class="node-pin cond-socket" title="Condition column — drag a wire here to set the condition"></div>
+                    <div class="node-pin out-pin" title="Output column"></div>
+                    <div class="node-header flex items-center gap-3 px-4 py-3 border-b border-gray-200 dark:border-gray-700">
                         <span class="card-badge flex-shrink-0 text-xs font-mono text-indigo-400 bg-indigo-50 dark:bg-indigo-900/30 border border-indigo-200 dark:border-indigo-700 px-2 py-0.5 rounded">Step</span>
                         <input type="text" name="output_column"
                             class="flex-1 px-3 py-1.5 rounded-md border border-gray-300 dark:border-gray-600
@@ -281,9 +494,10 @@
                 </div>
                 {% endif %}
             </div>
+            </div>
         </div>
 
-        <button type="submit"
+        <button type="submit" id="list-submit-btn"
             class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2.5 px-4 rounded-lg shadow-md text-sm">
             Save &amp; Start Tagging →
         </button>
@@ -399,14 +613,24 @@ function applyTagChipStyle(cb) {
         : 'background:transparent;border-color:#d1d5db;color:#6b7280;padding:2px 8px;border-radius:9999px;font-size:11px;border-width:1px;';
 }
 
+// Must match utils.py's NO_CONTEXT_COLUMNS.
+var NO_CONTEXT_COLUMNS = '__NONE__';
+
 function updateTagColsHidden(card) {
     var hidden   = card.querySelector('.tag-cols-hidden');
     if (!hidden) return;
     var allCbs   = card.querySelectorAll('.tag-chip-cb');
     var checked  = [];
     allCbs.forEach(function(cb) { if (cb.checked) checked.push(cb.dataset.col); });
-    // Empty string = "use all context" (fall-through behaviour)
-    hidden.value = (checked.length === allCbs.length || allCbs.length === 0) ? '' : checked.join(',');
+    if (allCbs.length === 0) {
+        hidden.value = '';                    // nothing to pick from — unset
+    } else if (checked.length === allCbs.length) {
+        hidden.value = '';                    // everything checked — "use all" (fall-through)
+    } else if (checked.length === 0) {
+        hidden.value = NO_CONTEXT_COLUMNS;    // explicitly zero — distinct from "unset"
+    } else {
+        hidden.value = checked.join(',');
+    }
 }
 
 function rebuildTagChips(card) {
@@ -455,11 +679,18 @@ function makeTagCard() {
     div.className = 'tag-card border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden bg-gray-50 dark:bg-gray-900';
     div.dataset.savedCols = '';
     div.dataset.imageParams = '';
+    div.dataset.nodeX = '';
+    div.dataset.nodeY = '';
     var ops = ['==:equals','!=:not equals','contains:contains','not_contains:not contains','is_empty:is empty','is_not_empty:is not empty'];
     var opHtml = ops.map(function(o){var p=o.split(':');return '<option value="'+p[0]+'">'+p[1]+'</option>';}).join('');
     var h = '';
     // Header
-    h += '<div class="flex items-center gap-3 px-4 py-3 border-b border-gray-200 dark:border-gray-700">';
+    h += '<input type="hidden" name="node_x" class="node-x-hidden" value="">';
+    h += '<input type="hidden" name="node_y" class="node-y-hidden" value="">';
+    h += '<div class="node-pin ctx-socket" title="Context columns — drag a wire here to add a column"></div>';
+    h += '<div class="node-pin cond-socket" title="Condition column — drag a wire here to set the condition"></div>';
+    h += '<div class="node-pin out-pin" title="Output column"></div>';
+    h += '<div class="node-header flex items-center gap-3 px-4 py-3 border-b border-gray-200 dark:border-gray-700">';
     h += '  <span class="card-badge flex-shrink-0 text-xs font-mono text-indigo-400 bg-indigo-50 dark:bg-indigo-900/30 border border-indigo-200 dark:border-indigo-700 px-2 py-0.5 rounded">Step</span>';
     h += '  <input type="text" name="output_column" class="flex-1 px-3 py-1.5 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-indigo-500" placeholder="output_column_name" required>';
     h += '  <button type="button" class="remove-btn text-xs text-red-400 hover:text-red-600 font-medium px-2">Remove</button>';
@@ -1064,5 +1295,7 @@ document.querySelectorAll('.tag-card').forEach(function(card) {
     }
 });
 </script>
+
+<script src="{% static 'tagger_app/js/graph_view.js' %}"></script>
 
 {% endblock %}

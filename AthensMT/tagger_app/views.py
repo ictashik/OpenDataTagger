@@ -280,16 +280,18 @@ def define_columns_view(request):
         send_contexts    = request.POST.getlist('send_context')
         tag_input_cols   = request.POST.getlist('tag_input_cols')
         image_params     = request.POST.getlist('image_params')
+        node_xs          = request.POST.getlist('node_x')
+        node_ys          = request.POST.getlist('node_y')
         image_naming_col = request.POST.get('image_naming_column', '').strip()
         image_format     = (request.POST.get('image_format', '').strip() or 'png').lower()
 
         new_config = []
-        # zip_longest: image_params is absent in text mode (fills to ''); other
-        # arrays are always one-per-card thanks to the mirrored-hidden inputs.
-        for oc, pt, cf, cop, cv, dv, sc, tic, ip in zip_longest(
+        # zip_longest: image_params/node_x/node_y are absent in some contexts (fills
+        # to ''); other arrays are always one-per-card thanks to the mirrored-hidden inputs.
+        for oc, pt, cf, cop, cv, dv, sc, tic, ip, nx, ny in zip_longest(
             output_cols, prompts,
             condition_fields, condition_ops, condition_values, default_values,
-            send_contexts, tag_input_cols, image_params,
+            send_contexts, tag_input_cols, image_params, node_xs, node_ys,
             fillvalue='',
         ):
             if (oc or '').strip() and (pt or '').strip():
@@ -303,6 +305,8 @@ def define_columns_view(request):
                     "SendContext":    (sc or '').strip(),
                     "InputColumns":   (tic or '').strip(),
                     "ImageParams":    (ip or '').strip(),
+                    "NodeX":          (nx or '').strip(),
+                    "NodeY":          (ny or '').strip(),
                 })
 
         if not config_path:
