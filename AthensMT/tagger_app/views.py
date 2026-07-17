@@ -28,6 +28,12 @@ from .utils import (
     get_llm_server_status,
     load_connections,
     save_connection,
+    get_llm_host_capability,
+    get_llm_disk_usage,
+    get_llm_models,
+    start_llm_model_download,
+    llm_download_status,
+    delete_llm_model,
     load_projects,
     save_project,
     update_project,
@@ -1213,6 +1219,81 @@ def test_connection_view(request):
             data   = _json.loads(resp.read())
             models = [m['name'] for m in data.get('models', [])]
             return JsonResponse({'success': True, 'models': models})
+    except Exception as e:
+        return JsonResponse({'success': False, 'error': str(e)})
+
+
+# ─── Connections & Models (LLM / Ollama catalog) ──────────────────────────────
+
+def llm_capability_view(request):
+    """This machine's detected VRAM/RAM plus free disk space where Ollama
+    stores pulled models — see get_llm_host_capability's docstring for the
+    local-vs-remote-Ollama caveat."""
+    try:
+        capability = get_llm_host_capability()
+        disk = get_llm_disk_usage()
+        return JsonResponse({'success': True, 'capability': capability, 'disk': disk})
+    except Exception as e:
+        return JsonResponse({'success': False, 'error': str(e)})
+
+
+def llm_models_view(request):
+    try:
+        return JsonResponse({'success': True, **get_llm_models()})
+    except Exception as e:
+        return JsonResponse({'success': False, 'error': str(e)})
+
+
+def llm_model_download_view(request):
+    """Pulls a chat or embedding model via the active Ollama server's native
+    /api/pull. size_bytes (optional, from the catalog entry the button was
+    rendered for) drives both the disk-space guard below and the download's
+    progress percentage — unknown for custom/uncataloged model ids, in which
+    case the guard is skipped and progress falls back to per-layer status text."""
+    if request.method != 'POST':
+        return JsonResponse({'success': False, 'error': 'POST required.'}, status=400)
+    model_id = request.POST.get('model_id', '').strip()
+    if not model_id:
+        return JsonResponse({'success': False, 'error': 'model_id is required.'}, status=400)
+
+    size_bytes = request.POST.get('size_bytes', '').strip()
+    size_bytes = int(size_bytes) if size_bytes.isdigit() else None
+
+    if size_bytes:
+        disk = get_llm_disk_usage()
+        if disk and disk['free_bytes'] < size_bytes * 1.05:
+            return JsonResponse({
+                'success': False,
+                'error': (f"Not enough free disk space: this model needs ~{_human_bytes(size_bytes)}, "
+                         f"only {disk['free_human']} free."),
+            }, status=400)
+
+    try:
+        job_id = start_llm_model_download(model_id, size_bytes)
+        return JsonResponse({'success': True, 'job_id': job_id})
+    except Exception as e:
+        return JsonResponse({'success': False, 'error': str(e)})
+
+
+def llm_model_download_status_view(request):
+    job_id = request.GET.get('job_id', '').strip()
+    if not job_id:
+        return JsonResponse({'success': False, 'error': 'job_id is required.'}, status=400)
+    try:
+        return JsonResponse({'success': True, **llm_download_status(job_id)})
+    except Exception as e:
+        return JsonResponse({'success': False, 'error': str(e)})
+
+
+def llm_model_delete_view(request):
+    if request.method != 'POST':
+        return JsonResponse({'success': False, 'error': 'POST required.'}, status=400)
+    model_id = request.POST.get('model_id', '').strip()
+    if not model_id:
+        return JsonResponse({'success': False, 'error': 'model_id is required.'}, status=400)
+    try:
+        delete_llm_model(model_id)
+        return JsonResponse({'success': True})
     except Exception as e:
         return JsonResponse({'success': False, 'error': str(e)})
 

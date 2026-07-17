@@ -20,7 +20,10 @@ OpenDataTagger (Athena ODT) is an **AI-powered CSV tagging tool** built with Dja
   Once tagging is complete, preview and download both the tagged CSV file and the detailed logs.
 
 - **Local LLM Integration:**
-  Uses a locally hosted LLM via Ollama's OpenAI-compatible API. Host/port/model are managed from the **Connection Editor** page and remembered in `connections.csv`.
+  Uses a locally hosted LLM via Ollama's OpenAI-compatible API. Host/port/model are managed from the **Connections & Models** page and remembered in `connections.csv`.
+
+- **LLM Model Catalog:**
+  The **Connections & Models** page also lists a curated catalog of chat and embedding models you can search, download (pulled straight through Ollama), and remove — each one flagged as fitting this machine's VRAM (fast), RAM only (slower, CPU fallback), or likely too large, alongside a live free-disk-space check before any download starts.
 
 - **Image Generation Mode:**
   Run a project in **image** mode instead of text tagging — each output column generates a Stable Diffusion image per row via a companion [`sd_server`](sd_server/README.md) process. Manage the connection, browse/download models and LoRAs, and compare models side-by-side from the **Image Backend** page.
@@ -37,7 +40,7 @@ OpenDataTagger (Athena ODT) is an **AI-powered CSV tagging tool** built with Dja
 - **Django 5.0** (or later)
 - **Pandas**
 - **OpenAI Python Library**
-- A local [Ollama](https://ollama.com) server (or any OpenAI-compatible endpoint) for text tagging — no fixed host/port is required, it's configured from the app's Connection Editor page.
+- A local [Ollama](https://ollama.com) server (or any OpenAI-compatible endpoint) for text tagging — no fixed host/port is required, it's configured from the app's Connections & Models page.
 - *(Optional, only for Image Generation Mode)* the companion `sd_server` process — see [Starting the Servers](#starting-the-servers) below.
 
 ## Installation
@@ -153,7 +156,7 @@ Starts the app and `sd_server` on one Docker network. In the app's **Image Backe
 
 For **Text** mode projects that need to cross-check rows against bulk reference data — structured (a canonical values table) or unstructured (a spec/standards document) — rather than fit it all into a prompt.
 
-1. In the **Connection Editor**, set an **Embedding Model** alongside the usual chat model — Ollama serves both from the same host/port, so there's nothing new to install or run. Prefer a dedicated embedding model like `nomic-embed-text` (274MB) over reusing a chat model: on a stress test against a real 4274-row dataset, a chat model repurposed for embeddings ran ~7x slower and clustered matches by shared boilerplate text rather than the actual distinguishing content, while `nomic-embed-text` correctly ranked the right match first. A chat-only model (no embedding support at all) fails the index build with a clear error rather than silently producing bad results.
+1. In **Connections & Models**, set an **Embedding Model** alongside the usual chat model — Ollama serves both from the same host/port, so there's nothing new to install or run. Prefer a dedicated embedding model like `nomic-embed-text` (274MB) over reusing a chat model: on a stress test against a real 4274-row dataset, a chat model repurposed for embeddings ran ~7x slower and clustered matches by shared boilerplate text rather than the actual distinguishing content, while `nomic-embed-text` correctly ranked the right match first. A chat-only model (no embedding support at all) fails the index build with a clear error rather than silently producing bad results.
 2. On **Upload** (or later, from **Define Columns**), attach as many **Reference Dataset** files as you like — any mix of `.csv` (structured rows) and `.txt`/`.md`/`.pdf` (prose). Each file gets a type badge, size, and (once indexed) chunk count, with its own **Remove** button.
 3. On **Define Columns**, the Reference Data card shows a live chunk-count preview before you build, and click **Build Index** once — every attached file is chunked (one chunk per CSV row, or windowed paragraphs for text/PDF) and embedded into one combined index, with a progress bar and an estimated-time-remaining readout while it runs.
 4. Check **Ground with reference data** on any output tag and set how many matches (Top-K) to retrieve. At tagging time, the closest reference chunks for that row (from any attached file) are appended to the prompt as a "Reference Data" block, and the matched sources — labeled with their originating filename — are recorded in a `<column>_sources` column for review.
@@ -221,7 +224,10 @@ OpenDataTagger/
   Uploaded CSVs and generated outputs (tagged CSV, logs, and generated images) are stored under `AthensMT/media/`.
 
 - **LLM Integration:**
-  Text tagging talks to Ollama via `tagger_app/utils.py`, using the most-recently-used entry in `connections.csv`. Manage this from the Connection Editor page — there's no env var to set.
+  Text tagging talks to Ollama via `tagger_app/utils.py`, using the most-recently-used entry in `connections.csv`. Manage this from the Connections & Models page — there's no env var to set.
+
+- **LLM Model Catalog:**
+  The curated chat/embedding model list lives in `tagger_app/llm_catalog.json` (mirrors `sd_server/catalog.json`'s shape — id, approximate size, VRAM need). Downloads go straight through Ollama's native `/api/pull`/`/api/delete`, no extra service. VRAM/RAM capability is detected on the machine running ODT itself (no `torch` dependency — `platform`/`sysctl`/`nvidia-smi`), and free disk space is checked against `OLLAMA_MODELS` (or `~/.ollama/models`) before a download starts; both are best-effort if Ollama runs on a different host, since its API has no way to report a remote box's hardware.
 
 - **Image Backend Integration:**
   Image generation talks to `sd_server` via `tagger_app/utils.py`, using the most-recently-used entry in `image_connections.csv` (falls back to `SD_SERVER_DEFAULT` in `settings.py`). Manage this from the Image Backend page.
