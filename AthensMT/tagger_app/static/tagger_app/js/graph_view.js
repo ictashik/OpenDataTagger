@@ -204,8 +204,34 @@
         if (!newCard) return;
         var pos = autoLayoutIndex(cards.length - 1);
         setPos(newCard, pos.x, pos.y);
+        ensureImgCollapseToggle(newCard);
         if (graphActive && window.__gvRedrawWires) window.__gvRedrawWires();
     });
+
+    /* Image Settings starts collapsed in graph view (image-mode projects
+       only — enhanceCardForImage, defined in the inline script, is what
+       actually builds .img-section, and it already ran for every card
+       that exists by the time this script runs). List view is untouched:
+       the toggle button and collapsed state are both graph-mode-only via
+       CSS scoped under #tag-container.graph-active. */
+    function ensureImgCollapseToggle(card) {
+        var sec = card.querySelector('.img-section');
+        if (!sec || sec.dataset.gvCollapseReady) return;
+        sec.dataset.gvCollapseReady = '1';
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'gv-img-collapse-btn';
+        sec.insertBefore(btn, sec.firstChild);
+        sec.classList.add('gv-collapsed');
+        btn.textContent = 'Image Settings ▸ (click to expand)';
+        btn.addEventListener('click', function () {
+            var collapsed = sec.classList.toggle('gv-collapsed');
+            btn.textContent = 'Image Settings ' + (collapsed ? '▸ (click to expand)' : '▾ (click to collapse)');
+        });
+    }
+    function ensureAllImgCollapseToggles() {
+        Array.from(tagContainer.querySelectorAll('.tag-card')).forEach(ensureImgCollapseToggle);
+    }
 
     /* ═══ Source node ("CSV Columns") — built once, pins re-highlighted
        whenever the global Step-1 chip selection changes. Fixed position,
@@ -557,6 +583,7 @@
 
     buildSourceNodeOnce();
     updateSourceHighlights();
+    ensureAllImgCollapseToggles();
 
     /* ═══ Mode toggle ═══════════════════════════════════════════════════ */
     function setMode(mode) {

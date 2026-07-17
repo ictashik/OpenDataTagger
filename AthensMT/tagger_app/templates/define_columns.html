@@ -109,6 +109,17 @@
         border-radius: 50%; background: #ef4444; color: #fff; font-size: 13px; line-height: 1;
         align-items: center; justify-content: center; cursor: pointer; z-index: 4; border: 2px solid #fff;
     }
+
+    /* Image Settings starts collapsed in graph view only — it's a lot of
+       content (model/scheduler/LoRA/size controls) and graph view is
+       about seeing pipeline structure at a glance. List view is unaffected. */
+    .gv-img-collapse-btn { display: none; }
+    #tag-container.graph-active .gv-img-collapse-btn {
+        display: block; width: 100%; text-align: left; font-size: 11px; font-weight: 600;
+        color: #6b7280; padding: 0 0 8px; background: none; border: none; cursor: pointer;
+    }
+    @media (prefers-color-scheme: dark) { #tag-container.graph-active .gv-img-collapse-btn { color: #9ca3af; } }
+    #tag-container.graph-active .img-section.gv-collapsed > *:not(.gv-img-collapse-btn) { display: none; }
 </style>
 <div class="max-w-4xl mx-auto py-8 space-y-6" id="page-wrap">
 
