@@ -3,11 +3,14 @@ import openai
 import pandas as pd
 import numpy as np
 import os
+import platform
 import re
 import shutil
+import subprocess
 import time
 import json
 import base64
+import uuid
 import urllib.request
 import urllib.error
 import urllib.parse
@@ -207,6 +210,337 @@ def embed_texts(texts, embedding_model, conn=None, timeout=60):
             f"Check it's running and that the host/port in the Connection Editor are correct."
         ) from e
     return result.get('embeddings', [])
+
+
+# ─── LLM model catalog (Ollama) ───────────────────────────────────────────────
+#
+# Ollama itself hosts and serves models (no separate downloader process needed
+# like sd_server) — ODT just needs to call its native HTTP API: /api/tags to
+# see what's already pulled, /api/pull to fetch a new one, /api/delete to
+# remove one. There's no public "search the whole library" API, so — mirroring
+# sd_server's catalog.json for image models — a curated, hand-maintained list
+# of well-known chat and embedding models lives in llm_catalog.json, each
+# tagged with an approximate download size and the VRAM needed to run it at
+# full GPU speed. Anything already pulled but missing from the curated list
+# (or vice versa) is reconciled at request time in get_llm_models().
+
+LLM_CATALOG_PATH = os.path.join(_base, 'llm_catalog.json')
+
+# Ollama's own pull can take a very long time for large models on a slow
+# link; individual reads reset this timeout, so it only trips on a genuine
+# stall, not on total download duration.
+LLM_PULL_STALL_TIMEOUT = 60
+
+_llm_jobs = {}
+_llm_jobs_lock = threading.Lock()
+
+
+def load_llm_catalog():
+    try:
+        with open(LLM_CATALOG_PATH) as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"Error loading LLM catalog: {e}")
+        return []
+
+
+def _nvidia_smi_query():
+    """Best-effort NVIDIA VRAM query via nvidia-smi — no extra Python
+    dependency, returns None on any failure (not installed, no GPU, etc.)."""
+    try:
+        out = subprocess.run(
+            ['nvidia-smi', '--query-gpu=name,memory.total,memory.free',
+             '--format=csv,noheader,nounits'],
+            capture_output=True, text=True, timeout=4,
+        )
+        if out.returncode != 0 or not out.stdout.strip():
+            return None
+        name, total_mb, free_mb = [p.strip() for p in out.stdout.strip().splitlines()[0].split(',')]
+        return {'name': name, 'total_mb': int(float(total_mb)), 'free_mb': int(float(free_mb))}
+    except Exception:
+        return None
+
+
+def _system_ram_mb():
+    try:
+        return int(os.sysconf('SC_PAGE_SIZE') * os.sysconf('SC_PHYS_PAGES') / (1024 * 1024))
+    except (AttributeError, ValueError, OSError):
+        pass
+    try:  # Windows has no sysconf — fall back to the Win32 API via ctypes.
+        import ctypes
+
+        class MEMORYSTATUSEX(ctypes.Structure):
+            _fields_ = [('dwLength', ctypes.c_ulong), ('dwMemoryLoad', ctypes.c_ulong),
+                       ('ullTotalPhys', ctypes.c_ulonglong), ('ullAvailPhys', ctypes.c_ulonglong),
+                       ('ullTotalPageFile', ctypes.c_ulonglong), ('ullAvailPageFile', ctypes.c_ulonglong),
+                       ('ullTotalVirtual', ctypes.c_ulonglong), ('ullAvailVirtual', ctypes.c_ulonglong),
+                       ('ullAvailExtendedVirtual', ctypes.c_ulonglong)]
+        stat = MEMORYSTATUSEX()
+        stat.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+        ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat))  # type: ignore[attr-defined]
+        return int(stat.ullTotalPhys / (1024 * 1024))
+    except Exception:
+        return 0
+
+
+def get_llm_host_capability():
+    """Best-effort GPU/RAM detection for the machine ODT itself is running
+    on — no torch dependency (AthensMT deliberately has none; that's what
+    sd_server is for). This is NOT necessarily the machine running Ollama:
+    if Ollama is on a remote host, its API has no endpoint to report that
+    box's hardware, so the UI labels this clearly and falls back to
+    disk/VRAM guidance rather than hard-blocking anything."""
+    info = {
+        'backend':       'cpu',
+        'device_name':   None,
+        'vram_total_mb': 0,
+        'vram_free_mb':  0,
+        'ram_mb':        _system_ram_mb(),
+        'platform':      platform.platform(),
+        'warning':       '',
+    }
+
+    system = platform.system()
+    if system == 'Darwin':
+        try:
+            brand = subprocess.run(
+                ['sysctl', '-n', 'machdep.cpu.brand_string'],
+                capture_output=True, text=True, timeout=3,
+            ).stdout.strip()
+        except Exception:
+            brand = ''
+        if platform.machine() == 'arm64':
+            # Apple Silicon: unified memory shared between CPU and GPU —
+            # system RAM is the real VRAM ceiling (same proxy sd_server's
+            # capability.py uses for MPS).
+            info['backend']       = 'mps'
+            info['device_name']   = brand or 'Apple Silicon'
+            info['vram_total_mb'] = info['ram_mb']
+            info['vram_free_mb']  = info['ram_mb']
+        else:
+            info['device_name'] = brand or 'Intel Mac'
+            info['warning'] = 'Intel Mac — no GPU acceleration for Ollama; models run on CPU.'
+    elif system in ('Linux', 'Windows'):
+        nv = _nvidia_smi_query()
+        if nv:
+            info['backend']       = 'cuda'
+            info['device_name']   = nv['name']
+            info['vram_total_mb'] = nv['total_mb']
+            info['vram_free_mb']  = nv['free_mb']
+        else:
+            info['warning'] = ('No NVIDIA GPU detected (nvidia-smi unavailable) — models will '
+                               'run on CPU unless another accelerator is configured.')
+    else:
+        info['warning'] = f"Unrecognized platform '{system}' — capability detection skipped."
+
+    return info
+
+
+def _ollama_models_dir():
+    """Where Ollama stores pulled model blobs, for the disk-space check.
+    Respects OLLAMA_MODELS if set (same env var Ollama itself reads), same
+    caveat as capability detection: only accurate if Ollama runs on this
+    machine."""
+    override = os.environ.get('OLLAMA_MODELS')
+    if override:
+        return override
+    return os.path.join(os.path.expanduser('~'), '.ollama', 'models')
+
+
+def get_llm_disk_usage():
+    return get_disk_usage(_ollama_models_dir())
+
+
+def get_ollama_tags(conn=None, timeout=6):
+    """Models already pulled on the active Ollama server. Raises on
+    transport/HTTP errors — callers treat that as 'server unreachable',
+    same pattern as the SD server calls below."""
+    conn = conn or get_active_connection()
+    url = f"http://{conn['host']}:{conn['port']}/api/tags"
+    req = urllib.request.Request(url)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        data = json.loads(resp.read().decode('utf-8'))
+    return data.get('models', [])
+
+
+def get_llm_models():
+    """Curated catalog (chat + embedding) merged with what's actually
+    pulled on the active Ollama server, each entry annotated with whether
+    it fits this machine's VRAM (fast) or only system RAM (slow CPU
+    fallback — Ollama still runs it, just not accelerated)."""
+    conn = get_active_connection()
+    cap = get_llm_host_capability()
+    vram = cap.get('vram_total_mb') or 0
+    ram = cap.get('ram_mb') or 0
+
+    tags = get_ollama_tags(conn)
+    downloaded_by_name = {t['name']: t for t in tags}
+    # Ollama accepts pulling/using a bare name (e.g. "mistral") that then
+    # resolves to "mistral:latest" once pulled — match either form so a
+    # catalog entry doesn't show as "not downloaded" after a successful pull.
+    downloaded_bare = {name.split(':')[0]: t for name, t in downloaded_by_name.items()}
+
+    def _annotate(entry, min_vram_mb):
+        # A model needs roughly its own weight size in memory whether that
+        # memory is VRAM or system RAM; RAM fallback gets extra headroom for
+        # OS + KV cache since it has no dedicated allocator the way a GPU does.
+        entry['fits_vram'] = bool(vram) and vram >= min_vram_mb
+        entry['fits_ram']  = bool(ram) and ram >= min_vram_mb * 1.15
+        if entry['fits_vram']:
+            entry['fit'] = 'gpu'
+        elif entry['fits_ram']:
+            entry['fit'] = 'cpu_slow'
+        else:
+            entry['fit'] = 'insufficient'
+        return entry
+
+    catalog = load_llm_catalog()
+    catalog_ids = {m['id'] for m in catalog}
+    chat_models, embedding_models = [], []
+
+    for m in catalog:
+        entry = dict(m)
+        tag = downloaded_by_name.get(m['id']) or downloaded_bare.get(m['id'])
+        entry['downloaded'] = tag is not None
+        if tag:
+            # Prefer the server's real reported size/quant over the catalog estimate.
+            entry['size_bytes'] = tag.get('size') or entry.get('size_bytes')
+            details = tag.get('details') or {}
+            entry['quantization_level'] = details.get('quantization_level')
+            entry['parameter_size'] = details.get('parameter_size') or entry.get('parameter_size')
+        _annotate(entry, entry.get('min_vram_mb', 0))
+        (embedding_models if m.get('kind') == 'embedding' else chat_models).append(entry)
+
+    # Surface anything pulled locally that isn't in the curated catalog —
+    # unknown VRAM need, so treat it as already proven runnable on this server.
+    for name, tag in downloaded_by_name.items():
+        bare = name.split(':')[0]
+        if name in catalog_ids or bare in catalog_ids:
+            continue
+        details = tag.get('details') or {}
+        family = (details.get('family') or '').lower()
+        is_embedding = 'embed' in name.lower() or 'bert' in family or 'embed' in family
+        extra = _annotate({
+            'id': name, 'label': name, 'kind': 'embedding' if is_embedding else 'chat',
+            'family': details.get('family') or '', 'parameter_size': details.get('parameter_size'),
+            'context_length': None, 'min_vram_mb': 0, 'size_bytes': tag.get('size'),
+            'quantization_level': details.get('quantization_level'),
+            'downloaded': True,
+            'notes': 'Found on the Ollama server — not in the curated catalog.',
+        }, 0)
+        (embedding_models if is_embedding else chat_models).append(extra)
+
+    return {'capability': cap, 'chat_models': chat_models, 'embedding_models': embedding_models}
+
+
+def start_llm_model_download(model_id, catalog_size_bytes=None, conn=None):
+    conn = conn or get_active_connection()
+    job_id = str(uuid.uuid4())
+    with _llm_jobs_lock:
+        _llm_jobs[job_id] = {
+            'state': 'queued', 'model_id': model_id, 'message': 'Queued.',
+            'progress': None, 'bytes_done': 0, 'bytes_total': catalog_size_bytes or 0,
+            'speed_bps': None, 'eta_seconds': None,
+        }
+    threading.Thread(target=_run_llm_download, args=(job_id, model_id, conn, catalog_size_bytes),
+                     daemon=True).start()
+    return job_id
+
+
+def _llm_job_set(job_id, **kwargs):
+    with _llm_jobs_lock:
+        if job_id in _llm_jobs:
+            _llm_jobs[job_id].update(kwargs)
+
+
+def _run_llm_download(job_id, model_id, conn, catalog_size_bytes):
+    """Streams Ollama's NDJSON /api/pull progress. Each layer (model blob)
+    reports its own completed/total independently — there's no upfront sum
+    of every layer's size, so overall progress uses the curated catalog's
+    size_bytes as the denominator when known (bytes_done is a genuine
+    running total across layers); otherwise only per-layer status text is
+    shown, same degrade-gracefully approach as sd_server/downloader.py."""
+    url = f"http://{conn['host']}:{conn['port']}/api/pull"
+    payload = json.dumps({'model': model_id, 'stream': True}).encode('utf-8')
+    req = urllib.request.Request(url, data=payload, headers={'Content-Type': 'application/json'}, method='POST')
+
+    _llm_job_set(job_id, state='downloading', message='Starting pull…')
+    layer_base = 0
+    current_digest = None
+    current_total = 0
+    speed_ts = None
+    speed_bytes = 0
+    speed = None
+
+    try:
+        with urllib.request.urlopen(req, timeout=LLM_PULL_STALL_TIMEOUT) as resp:
+            for raw_line in resp:
+                line = raw_line.strip()
+                if not line:
+                    continue
+                try:
+                    evt = json.loads(line.decode('utf-8'))
+                except Exception:
+                    continue
+
+                if evt.get('error'):
+                    _llm_job_set(job_id, state='error', message=evt['error'])
+                    return
+
+                status_text = evt.get('status', '')
+                digest = evt.get('digest')
+                total = evt.get('total')
+                completed = evt.get('completed')
+
+                if digest and digest != current_digest:
+                    if current_digest is not None:
+                        layer_base += current_total
+                    current_digest = digest
+                    current_total = total or 0
+
+                if digest and total:
+                    done = layer_base + (completed or 0)
+                    now = time.monotonic()
+                    if speed_ts is None:
+                        speed_ts, speed_bytes = now, done
+                    elif now - speed_ts >= 0.5:
+                        inst = max(0, done - speed_bytes) / (now - speed_ts)
+                        speed = inst if speed is None else (0.3 * inst + 0.7 * speed)
+                        speed_ts, speed_bytes = now, done
+                    bytes_total = catalog_size_bytes or None
+                    pct = min(99, int(done / bytes_total * 100)) if bytes_total else None
+                    eta = int((bytes_total - done) / speed) if (speed and bytes_total and done < bytes_total) else None
+                    _llm_job_set(job_id, bytes_done=done, bytes_total=bytes_total or 0,
+                                progress=pct, speed_bps=speed, eta_seconds=eta, message=status_text)
+                else:
+                    _llm_job_set(job_id, message=status_text)
+
+                if status_text == 'success':
+                    _llm_job_set(job_id, state='complete', message='Download complete.', progress=100)
+                    return
+        _llm_job_set(job_id, state='complete', message='Download complete.', progress=100)
+    except urllib.error.HTTPError as e:
+        try:
+            detail = json.loads(e.read().decode('utf-8')).get('error', str(e))
+        except Exception:
+            detail = str(e)
+        _llm_job_set(job_id, state='error', message=detail)
+    except Exception as e:
+        _llm_job_set(job_id, state='error', message=str(e))
+
+
+def llm_download_status(job_id):
+    with _llm_jobs_lock:
+        return dict(_llm_jobs.get(job_id, {'state': 'unknown', 'message': 'No such job.'}))
+
+
+def delete_llm_model(model_id, conn=None, timeout=15):
+    conn = conn or get_active_connection()
+    url = f"http://{conn['host']}:{conn['port']}/api/delete"
+    payload = json.dumps({'model': model_id}).encode('utf-8')
+    req = urllib.request.Request(url, data=payload, headers={'Content-Type': 'application/json'}, method='DELETE')
+    with urllib.request.urlopen(req, timeout=timeout):
+        pass
 
 
 # ─── Image backend (Stable Diffusion server) ─────────────────────────────────

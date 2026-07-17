@@ -1,13 +1,15 @@
 {% extends "base.html" %}
 
 {% block content %}
-<div class="max-w-2xl mx-auto py-10 space-y-8">
+<div class="max-w-4xl mx-auto py-10 space-y-8">
+    {% csrf_token %}
 
     <!-- Header -->
     <div>
-        <h1 class="text-2xl font-semibold text-gray-900 dark:text-gray-100">Connection Editor</h1>
+        <h1 class="text-2xl font-semibold text-gray-900 dark:text-gray-100">Connections &amp; Models</h1>
         <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">
-            Set the remote Ollama server address and the model to use for tagging.
+            Point ODT at an <a href="https://ollama.com" class="underline" target="_blank" rel="noopener">Ollama</a>
+            server, then browse, download, and manage the chat and embedding models it serves.
         </p>
     </div>
 
@@ -135,9 +137,90 @@
     </div>
     {% endif %}
 
+    <!-- Capability + disk -->
+    <div class="bg-white dark:bg-gray-800 rounded-lg shadow p-6">
+        <h2 class="text-base font-semibold text-gray-800 dark:text-gray-100 mb-1">This machine's capability</h2>
+        <p class="text-xs text-gray-500 dark:text-gray-400 mb-3">
+            Detected on the machine running ODT itself, not necessarily the Ollama server above — Ollama's API
+            has no endpoint to report a remote host's hardware. If Ollama runs elsewhere, check VRAM there
+            directly (<code class="text-[11px]">ollama ps</code>, <code class="text-[11px]">nvidia-smi</code>).
+        </p>
+        <div id="capability-box" class="text-sm text-gray-600 dark:text-gray-300">Loading…</div>
+    </div>
+
+    <!-- Chat Models -->
+    <div class="bg-white dark:bg-gray-800 rounded-lg shadow p-6">
+        <div class="flex items-center justify-between mb-1">
+            <h2 class="text-base font-semibold text-gray-800 dark:text-gray-100">Chat Models</h2>
+        </div>
+        <p class="text-xs text-gray-500 dark:text-gray-400 mb-3">
+            Curated catalog of Ollama chat/instruct models. Sizes and VRAM figures are approximate — the exact
+            figures for a model you've already pulled come straight from the Ollama server instead.
+        </p>
+        <input id="chat-search" type="text" placeholder="Search by name or family…"
+            class="w-full mb-3 px-3 py-2 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-sm text-gray-900 dark:text-gray-100">
+        <div id="chat-models-box" class="space-y-2 text-sm text-gray-600 dark:text-gray-300">Loading…</div>
+    </div>
+
+    <!-- Embedding Models -->
+    <div class="bg-white dark:bg-gray-800 rounded-lg shadow p-6">
+        <h2 class="text-base font-semibold text-gray-800 dark:text-gray-100 mb-1">Embedding Models</h2>
+        <p class="text-xs text-gray-500 dark:text-gray-400 mb-3">
+            Used for retrieval-augmented tagging (the <span class="font-mono text-[11px]">Embedding Model</span>
+            field above). <span class="font-mono text-[11px]">nomic-embed-text</span> is the recommended default —
+            see the readme's measured comparison against reusing a chat model.
+        </p>
+        <input id="embed-search" type="text" placeholder="Search by name or family…"
+            class="w-full mb-3 px-3 py-2 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-sm text-gray-900 dark:text-gray-100">
+        <div id="embed-models-box" class="space-y-2 text-sm text-gray-600 dark:text-gray-300">Loading…</div>
+    </div>
+
+    <!-- Pull a custom model -->
+    <div class="bg-white dark:bg-gray-800 rounded-lg shadow p-6">
+        <h2 class="text-base font-semibold text-gray-800 dark:text-gray-100 mb-1">Pull a custom model</h2>
+        <p class="text-xs text-gray-500 dark:text-gray-400 mb-3">
+            Not in the catalog above? Paste any tag from the
+            <a href="https://ollama.com/library" class="underline" target="_blank" rel="noopener">Ollama library</a>
+            (format: <code class="text-[11px]">name</code> or <code class="text-[11px]">name:tag</code>). Size and
+            VRAM fit are unknown ahead of time for custom pulls, so the disk-space check is skipped.
+        </p>
+        <div class="flex gap-2">
+            <input id="inp-custom-model" type="text" placeholder="e.g. llama3.1:8b-instruct-q4_K_M"
+                class="flex-1 px-3 py-2 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-sm text-gray-900 dark:text-gray-100 font-mono">
+            <button onclick="downloadCustomModel()"
+                class="px-4 py-2 rounded-md bg-purple-600 hover:bg-purple-700 text-white text-sm font-medium">Download</button>
+        </div>
+        <div id="custom-download-box" class="mt-2 space-y-1"></div>
+    </div>
+
 </div>
 
 <script>
+    function getCookie(name) {
+        var v = document.cookie.match('(^|;)\\s*' + name + '\\s*=\\s*([^;]+)');
+        return v ? v.pop() : '';
+    }
+    function escHtml(s) {
+        return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+    function formatBytes(bytes) {
+        if (bytes === null || bytes === undefined || isNaN(bytes) || bytes === 0) return '?';
+        if (bytes < 1024) return bytes + ' B';
+        var units = ['KB', 'MB', 'GB', 'TB'];
+        var val = bytes, i = -1;
+        do { val /= 1024; i++; } while (val >= 1024 && i < units.length - 1);
+        return val.toFixed(val >= 100 ? 0 : val >= 10 ? 1 : 2) + ' ' + units[i];
+    }
+    function formatSpeed(bytesPerSec) { return bytesPerSec ? formatBytes(bytesPerSec) + '/s' : ''; }
+    function formatDuration(seconds) {
+        if (seconds === null || seconds === undefined || isNaN(seconds) || seconds < 0) return '';
+        seconds = Math.round(seconds);
+        var h = Math.floor(seconds / 3600), m = Math.floor((seconds % 3600) / 60), s = seconds % 60;
+        if (h > 0) return h + 'h ' + m + 'm left';
+        if (m > 0) return m + 'm ' + s + 's left';
+        return s + 's left';
+    }
+
     function loadConn(host, port, model, embeddingModel) {
         document.getElementById('inp-host').value = host;
         document.getElementById('inp-port').value = port;
@@ -178,7 +261,6 @@
             if (data.success) {
                 document.getElementById('active-label').textContent = `${host}:${port} — ${model}`;
                 showStatus('Saved and activated.', true);
-                // Refresh the page after a short delay so history table updates
                 setTimeout(() => location.reload(), 800);
             } else {
                 showStatus(data.message, false);
@@ -220,5 +302,184 @@
             resultEl.textContent = 'Request failed — is the server running?';
         }
     }
+
+    /* ═══ Capability + disk ═══════════════════════════════════════════ */
+    function renderCapability(cap, disk) {
+        var rows = [
+            ['Backend', cap.backend],
+            ['Device', cap.device_name],
+            ['VRAM (est.)', cap.vram_total_mb ? (formatBytes(cap.vram_total_mb * 1024 * 1024) + ' total') : 'n/a'],
+            ['System RAM', cap.ram_mb ? formatBytes(cap.ram_mb * 1024 * 1024) : 'n/a'],
+            ['Disk free (Ollama models dir)', disk ? (disk.free_human + ' / ' + disk.total_human + ' (' + disk.percent_free + '%)') : 'unknown'],
+        ];
+        var html = '<div class="grid grid-cols-2 gap-x-6 gap-y-1">';
+        rows.forEach(function(r){ html += '<div><span class="text-gray-400">' + r[0] + ':</span> ' + escHtml(r[1] || '—') + '</div>'; });
+        html += '</div>';
+        if (cap.warning) html += '<p class="mt-2 text-yellow-500">⚠ ' + escHtml(cap.warning) + '</p>';
+        if (disk && disk.percent_free < 10) html += '<p class="mt-2 text-red-500">⚠ Low disk space — under 10% free.</p>';
+        document.getElementById('capability-box').innerHTML = html;
+    }
+
+    /* ═══ Model catalog rendering ═════════════════════════════════════ */
+    function badge(text, cls) { return '<span class="text-[11px] px-1.5 py-0.5 rounded ' + cls + '">' + text + '</span>'; }
+
+    function fitBadge(m) {
+        if (m.fit === 'gpu') return badge('fits in VRAM', 'bg-green-100 text-green-700');
+        if (m.fit === 'cpu_slow') return badge('RAM only — slow', 'bg-yellow-100 text-yellow-700');
+        return badge('may not fit', 'bg-red-100 text-red-700');
+    }
+
+    function renderModelList(boxId, models, kind) {
+        var box = document.getElementById(boxId);
+        if (!models || !models.length) {
+            box.innerHTML = '<p class="text-gray-400">No models listed.</p>';
+            return;
+        }
+        var html = '';
+        models.forEach(function(m) {
+            var badges = '';
+            if (m.downloaded) badges += badge('downloaded', 'bg-indigo-100 text-indigo-700') + ' ';
+            badges += fitBadge(m);
+            var action = m.downloaded
+                ? '<button class="del-btn px-3 py-1 rounded-md border border-red-300 text-red-600 hover:bg-red-50 dark:hover:bg-red-900/30 text-xs" data-id="' + escHtml(m.id) + '" data-kind="' + kind + '">Remove</button>'
+                : '<button class="dl-btn px-3 py-1 rounded-md bg-indigo-600 hover:bg-indigo-700 text-white text-xs" data-id="' + escHtml(m.id) + '" data-size="' + (m.size_bytes || '') + '" data-kind="' + kind + '">Download</button>';
+            html += '<div class="model-row flex items-center justify-between border border-gray-200 dark:border-gray-700 rounded-lg px-4 py-3" data-search="' +
+                    escHtml(((m.label||m.id) + ' ' + m.id + ' ' + (m.family||'')).toLowerCase()) + '">'
+                 +    '<div>'
+                 +      '<div class="font-medium text-gray-800 dark:text-gray-100">' + escHtml(m.label || m.id) + ' ' + badges + '</div>'
+                 +      '<div class="text-xs text-gray-400 font-mono">' + escHtml(m.id) + '</div>'
+                 +      '<div class="text-xs text-gray-400">' +
+                          [m.parameter_size, m.quantization_level, m.size_bytes ? formatBytes(m.size_bytes) : null,
+                           m.min_vram_mb ? ('~' + formatBytes(m.min_vram_mb * 1024 * 1024) + ' VRAM for full GPU speed') : null]
+                            .filter(Boolean).join(' · ') + '</div>'
+                 +      (m.notes ? '<div class="text-xs text-gray-400 mt-0.5">' + escHtml(m.notes) + '</div>' : '')
+                 +    '</div>'
+                 +    '<div class="dl-slot text-right" data-id="' + escHtml((kind === 'embedding' ? 'embed-' : 'chat-') + m.id) + '">' + action + '</div>'
+                 +  '</div>';
+        });
+        box.innerHTML = html;
+
+        box.querySelectorAll('.dl-btn').forEach(function(btn) {
+            btn.addEventListener('click', function() {
+                downloadModel(btn.dataset.id, btn.dataset.size,
+                    '.dl-slot[data-id="' + CSS.escape((btn.dataset.kind === 'embedding' ? 'embed-' : 'chat-') + btn.dataset.id) + '"]');
+            });
+        });
+        box.querySelectorAll('.del-btn').forEach(function(btn) {
+            btn.addEventListener('click', function() {
+                deleteModel(btn.dataset.id, btn.dataset.kind);
+            });
+        });
+    }
+
+    function downloadModel(modelId, sizeBytes, slotSelector) {
+        var slot = document.querySelector(slotSelector);
+        if (slot) slot.innerHTML = '<span class="text-xs text-gray-400">Starting…</span>';
+        var fd = new FormData();
+        fd.append('model_id', modelId);
+        if (sizeBytes) fd.append('size_bytes', sizeBytes);
+        fetch("{% url 'llm_model_download' %}", {
+            method: 'POST', headers: {'X-CSRFToken': getCookie('csrftoken')}, body: fd
+        }).then(function(r){return r.json();}).then(function(d){
+            if (!d.success || !d.job_id) { if (slot) slot.innerHTML = '<span class="text-xs text-red-500">' + escHtml(d.error || 'Failed') + '</span>'; return; }
+            pollDownload(d.job_id, slotSelector);
+        }).catch(function(e){ if (slot) slot.innerHTML = '<span class="text-xs text-red-500">' + escHtml(e) + '</span>'; });
+    }
+
+    function pollDownload(jobId, slotSelector) {
+        var slot = document.querySelector(slotSelector);
+        fetch("{% url 'llm_model_download_status' %}?job_id=" + encodeURIComponent(jobId))
+            .then(function(r){return r.json();}).then(function(d){
+                if (!slot) return;
+                if (d.state === 'complete') {
+                    slot.innerHTML = '<span class="text-xs text-green-500">Downloaded ✓</span>';
+                    setTimeout(function() { loadModels(); }, 800);
+                } else if (d.state === 'error') {
+                    slot.innerHTML = '<span class="text-xs text-red-500" title="' + escHtml(d.message||'') + '">Error</span>';
+                } else {
+                    var pct = (d.progress !== null && d.progress !== undefined) ? d.progress : null;
+                    if (pct !== null) {
+                        var sizeLine = formatBytes(d.bytes_done || 0) + (d.bytes_total ? ' / ' + formatBytes(d.bytes_total) : '') + ' (' + pct + '%)';
+                        var metaBits = [];
+                        if (d.speed_bps) metaBits.push(formatSpeed(d.speed_bps));
+                        var etaStr = formatDuration(d.eta_seconds);
+                        if (etaStr) metaBits.push(etaStr);
+                        slot.innerHTML =
+                            '<div style="width:170px;">' +
+                            '<div class="text-[10px] text-gray-500 dark:text-gray-400 mb-0.5">' + sizeLine + '</div>' +
+                            '<div class="bg-gray-200 dark:bg-gray-700 rounded-full h-1.5"><div class="bg-indigo-500 h-1.5 rounded-full" style="width:' + pct + '%"></div></div>' +
+                            (metaBits.length ? '<div class="text-[10px] text-gray-400 mt-0.5">' + escHtml(metaBits.join(' · ')) + '</div>' : '') +
+                            '</div>';
+                    } else {
+                        slot.innerHTML = '<span class="text-xs text-gray-400">' + escHtml(d.message || d.state || 'downloading…') + '</span>';
+                    }
+                    setTimeout(function(){ pollDownload(jobId, slotSelector); }, 1500);
+                }
+            }).catch(function(){ setTimeout(function(){ pollDownload(jobId, slotSelector); }, 3000); });
+    }
+
+    function deleteModel(modelId, kind) {
+        if (!confirm('Remove ' + modelId + ' from the Ollama server? This frees disk space but you\'ll need to re-download it to use it again.')) return;
+        var slot = document.querySelector('.dl-slot[data-id="' + CSS.escape((kind === 'embedding' ? 'embed-' : 'chat-') + modelId) + '"]');
+        if (slot) slot.innerHTML = '<span class="text-xs text-gray-400">Removing…</span>';
+        var fd = new FormData();
+        fd.append('model_id', modelId);
+        fetch("{% url 'llm_model_delete' %}", {
+            method: 'POST', headers: {'X-CSRFToken': getCookie('csrftoken')}, body: fd
+        }).then(function(r){return r.json();}).then(function(d){
+            if (!d.success) { if (slot) slot.innerHTML = '<span class="text-xs text-red-500">' + escHtml(d.error || 'Failed') + '</span>'; return; }
+            loadModels();
+        }).catch(function(e){ if (slot) slot.innerHTML = '<span class="text-xs text-red-500">' + escHtml(e) + '</span>'; });
+    }
+
+    function serverOffline(err) {
+        document.getElementById('capability-box').innerHTML =
+            '<p class="text-red-500">Could not reach the Ollama server. Is it running?</p>' +
+            '<p class="text-xs text-gray-400 mt-1">' + escHtml(err || '') + '</p>';
+        var msg = '<p class="text-gray-400">Ollama unreachable — start it, then Save &amp; Activate above once it\'s up.</p>';
+        document.getElementById('chat-models-box').innerHTML = msg;
+        document.getElementById('embed-models-box').innerHTML = msg;
+    }
+
+    function loadModels() {
+        fetch("{% url 'llm_models' %}").then(function(r){return r.json();}).then(function(d){
+            if (!d.success) { serverOffline(d.error); return; }
+            renderModelList('chat-models-box', d.chat_models, 'chat');
+            renderModelList('embed-models-box', d.embedding_models, 'embedding');
+            filterModels('chat-search', 'chat-models-box');
+            filterModels('embed-search', 'embed-models-box');
+        }).catch(function(e){ serverOffline(String(e)); });
+    }
+
+    function loadCapability() {
+        fetch("{% url 'llm_capability' %}").then(function(r){return r.json();}).then(function(d){
+            if (!d.success) { serverOffline(d.error); return; }
+            renderCapability(d.capability, d.disk);
+        }).catch(function(e){ serverOffline(String(e)); });
+    }
+
+    function filterModels(inputId, boxId) {
+        var q = document.getElementById(inputId).value.trim().toLowerCase();
+        document.querySelectorAll('#' + boxId + ' .model-row').forEach(function(row) {
+            row.style.display = (!q || row.dataset.search.indexOf(q) !== -1) ? '' : 'none';
+        });
+    }
+    document.getElementById('chat-search').addEventListener('input', function(){ filterModels('chat-search', 'chat-models-box'); });
+    document.getElementById('embed-search').addEventListener('input', function(){ filterModels('embed-search', 'embed-models-box'); });
+
+    function downloadCustomModel() {
+        var modelId = document.getElementById('inp-custom-model').value.trim();
+        if (!modelId) return;
+        var box = document.getElementById('custom-download-box');
+        var slotId = 'custom-' + modelId.replace(/[^a-zA-Z0-9]/g, '_');
+        box.insertAdjacentHTML('afterbegin',
+            '<div class="dl-slot text-xs text-gray-400 flex items-center justify-between border border-gray-200 dark:border-gray-700 rounded px-3 py-2" data-id="' + slotId + '">' +
+            '<span class="font-mono">' + escHtml(modelId) + '</span><span>Starting…</span></div>');
+        downloadModel(modelId, null, '.dl-slot[data-id="' + CSS.escape(slotId) + '"]');
+        document.getElementById('inp-custom-model').value = '';
+    }
+
+    loadCapability();
+    loadModels();
 </script>
 {% endblock %}
