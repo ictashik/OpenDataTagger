@@ -203,6 +203,138 @@
         if (graphActive && window.__gvRedrawWires) window.__gvRedrawWires();
     });
 
+    /* ═══ Source node ("CSV Columns") — built once, pins re-highlighted
+       whenever the global Step-1 chip selection changes. Fixed position,
+       not draggable, not persisted (purely a visual anchor). ═══ */
+    var sourceNode = document.getElementById('graph-source-node');
+
+    function buildSourceNodeOnce() {
+        if (!sourceNode || sourceNode.dataset.built) return;
+        sourceNode.dataset.built = '1';
+        sourceNode.style.setProperty('--nx', '40px');
+        sourceNode.style.setProperty('--ny', '40px');
+        var html = '';
+        html += '<div class="px-3 py-2 border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 rounded-t-lg">';
+        html += '  <span class="text-xs font-semibold text-gray-700 dark:text-gray-200">CSV Columns</span>';
+        html += '</div>';
+        html += '<div class="src-pin-list py-1">';
+        (window.ALL_COLUMNS || []).forEach(function (col) {
+            html += '<div class="flex items-center gap-2 px-3 py-1 text-xs" style="white-space:nowrap;">'
+                + '<span class="src-pin-dot" data-col="' + escAttr(col) + '"></span>'
+                + '<span class="src-pin-label truncate text-gray-400 dark:text-gray-500" style="max-width:170px;">' + escHtml(col) + '</span>'
+                + '</div>';
+        });
+        html += '</div>';
+        sourceNode.innerHTML = html;
+    }
+
+    function updateSourceHighlights() {
+        if (!sourceNode) return;
+        var selected = {};
+        document.querySelectorAll('.chip-cb:checked').forEach(function (cb) { selected[cb.value] = true; });
+        sourceNode.querySelectorAll('.src-pin-dot').forEach(function (dot) {
+            var active = !!selected[dot.dataset.col];
+            dot.classList.toggle('active', active);
+            var label = dot.nextElementSibling;
+            if (!label) return;
+            label.classList.toggle('text-gray-400', !active);
+            label.classList.toggle('dark:text-gray-500', !active);
+            label.classList.toggle('text-gray-800', active);
+            label.classList.toggle('dark:text-gray-100', active);
+            label.classList.toggle('font-medium', active);
+        });
+    }
+
+    var chipContainer = document.getElementById('chip-container');
+    if (chipContainer) chipContainer.addEventListener('change', function () {
+        updateSourceHighlights();
+        if (graphActive && window.__gvRedrawWires) window.__gvRedrawWires();
+    });
+
+    /* ═══ Wires — recomputed from existing state on every redraw, never
+       stored. A column feeding a tag node's context/condition resolves to
+       either a source-node pin (a raw CSV column) or an earlier tag's
+       output pin (its OutputColumn), mirroring real run-time precedence
+       (a generated column shadows a same-named CSV column). ═══ */
+    function contextColumnsForCard(card, idx) {
+        var hidden = card.querySelector('.tag-cols-hidden');
+        var val = hidden ? hidden.value.trim() : '';
+        var avail = getAvailableColsForCard(idx);
+        if (!val) return avail; // empty = "use all available"
+        var wanted = val.split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+        return wanted.filter(function (c) { return avail.indexOf(c) !== -1; });
+    }
+
+    function conditionColumnForCard(card) {
+        var toggle = card.querySelector('.cond-toggle');
+        if (!toggle || !toggle.checked) return null;
+        var field = card.querySelector('input[name="condition_field"]');
+        var val = field ? field.value.trim() : '';
+        return val || null;
+    }
+
+    function findUpstreamPin(colName, cardIdx, cards) {
+        for (var j = cardIdx - 1; j >= 0; j--) {
+            var nameInput = cards[j].querySelector('input[name="output_column"]');
+            if (nameInput && nameInput.value.trim() === colName) {
+                return cards[j].querySelector('.out-pin');
+            }
+        }
+        if (sourceNode) {
+            var dots = sourceNode.querySelectorAll('.src-pin-dot');
+            for (var i = 0; i < dots.length; i++) {
+                if (dots[i].dataset.col === colName) return dots[i];
+            }
+        }
+        return null;
+    }
+
+    function redrawWires() {
+        var svg = document.getElementById('graph-wires-svg');
+        if (!svg) return;
+        while (svg.firstChild) svg.removeChild(svg.firstChild);
+        if (!graphActive) return;
+
+        var containerRect = tagContainer.getBoundingClientRect();
+        function anchor(el) {
+            var r = el.getBoundingClientRect();
+            return {
+                x: (r.left + r.width / 2 - containerRect.left) / canvas.scale,
+                y: (r.top + r.height / 2 - containerRect.top) / canvas.scale
+            };
+        }
+        function drawWire(fromEl, toEl, extraClass) {
+            if (!fromEl || !toEl) return;
+            var a = anchor(fromEl), b = anchor(toEl);
+            var bend = Math.max(60, Math.abs(b.x - a.x) * 0.5);
+            var d = 'M ' + a.x + ' ' + a.y
+                + ' C ' + (a.x + bend) + ' ' + a.y + ', '
+                + (b.x - bend) + ' ' + b.y + ', '
+                + b.x + ' ' + b.y;
+            var path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+            path.setAttribute('d', d);
+            path.setAttribute('class', 'gv-wire' + (extraClass ? ' ' + extraClass : ''));
+            svg.appendChild(path);
+        }
+
+        var cards = Array.from(tagContainer.querySelectorAll('.tag-card'));
+        cards.forEach(function (card, idx) {
+            var ctxSocket = card.querySelector('.ctx-socket');
+            var condSocket = card.querySelector('.cond-socket');
+
+            contextColumnsForCard(card, idx).forEach(function (col) {
+                drawWire(findUpstreamPin(col, idx, cards), ctxSocket, 'gv-wire-ctx');
+            });
+
+            var condCol = conditionColumnForCard(card);
+            if (condCol) drawWire(findUpstreamPin(condCol, idx, cards), condSocket, 'gv-wire-cond');
+        });
+    }
+    window.__gvRedrawWires = redrawWires;
+
+    buildSourceNodeOnce();
+    updateSourceHighlights();
+
     /* ═══ Mode toggle ═══════════════════════════════════════════════════ */
     function setMode(mode) {
         graphActive = (mode === 'graph');

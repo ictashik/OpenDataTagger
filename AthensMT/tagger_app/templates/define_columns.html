@@ -43,7 +43,10 @@
         }
     }
 
-    #tag-container.graph-active { position: relative; transform-origin: 0 0; }
+    /* Explicit size: with only absolutely-positioned children, the container
+       would otherwise collapse to 0×0, and a 0-height SVG child silently
+       fails to paint its overflow content even with overflow:visible. */
+    #tag-container.graph-active { position: relative; transform-origin: 0 0; width: 8000px; height: 5000px; }
     #tag-container.graph-active > .tag-card {
         position: absolute; left: var(--nx, 0px); top: var(--ny, 0px);
         width: 420px; margin: 0; max-height: 80vh; overflow-y: auto;
@@ -61,8 +64,35 @@
     }
     #tag-container.graph-active #graph-wires-svg { display: block; }
 
-    #graph-source-node { display: none; }
-    #tag-container.graph-active #graph-source-node { display: block; position: absolute; z-index: 1; }
+    #graph-source-node {
+        display: none; width: 220px; max-height: 70vh; overflow-y: auto;
+        background: #fff; border: 1px solid #e5e7eb; border-radius: 0.5rem;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+    }
+    @media (prefers-color-scheme: dark) {
+        #graph-source-node { background: #1f2937; border-color: #374151; }
+    }
+    #tag-container.graph-active #graph-source-node {
+        display: block; position: absolute; left: var(--nx, 40px); top: var(--ny, 40px); z-index: 1;
+    }
+    .src-pin-dot { width: 10px; height: 10px; border-radius: 50%; background: #d1d5db; flex-shrink: 0; cursor: crosshair; }
+    .src-pin-dot.active { background: #4f46e5; }
+    @media (prefers-color-scheme: dark) { .src-pin-dot { background: #4b5563; } }
+
+    .node-pin {
+        display: none; position: absolute; width: 14px; height: 14px; border-radius: 50%;
+        border: 2px solid #fff; cursor: crosshair; z-index: 2;
+    }
+    @media (prefers-color-scheme: dark) { .node-pin { border-color: #1f2937; } }
+    #tag-container.graph-active .node-pin { display: block; }
+    .ctx-socket  { left: -7px; top: 20px; background: #4f46e5; }
+    .cond-socket { left: -7px; top: 44px; background: #f59e0b; }
+    .out-pin     { right: -7px; top: 20px; background: #10b981; }
+    .node-pin:hover { transform: scale(1.3); }
+
+    .gv-wire { stroke: #a5b4fc; stroke-width: 2; fill: none; }
+    .gv-wire-cond { stroke: #f59e0b; stroke-dasharray: 5 4; }
+    @media (prefers-color-scheme: dark) { .gv-wire { stroke: #6366f1; } .gv-wire-cond { stroke: #d97706; } }
 </style>
 <div class="max-w-4xl mx-auto py-8 space-y-6" id="page-wrap">
 
@@ -195,6 +225,9 @@
                      data-node-y="{{ entry.NodeY }}">
                     <input type="hidden" name="node_x" class="node-x-hidden" value="{{ entry.NodeX }}">
                     <input type="hidden" name="node_y" class="node-y-hidden" value="{{ entry.NodeY }}">
+                    <div class="node-pin ctx-socket" title="Context columns — drag a wire here to add a column"></div>
+                    <div class="node-pin cond-socket" title="Condition column — drag a wire here to set the condition"></div>
+                    <div class="node-pin out-pin" title="Output column"></div>
                     <!-- Card header -->
                     <div class="flex items-center gap-3 px-4 py-3 border-b border-gray-200 dark:border-gray-700">
                         <span class="card-badge flex-shrink-0 text-xs font-mono text-indigo-400 bg-indigo-50 dark:bg-indigo-900/30 border border-indigo-200 dark:border-indigo-700 px-2 py-0.5 rounded">Step</span>
@@ -291,6 +324,9 @@
                      data-node-y="">
                     <input type="hidden" name="node_x" class="node-x-hidden" value="">
                     <input type="hidden" name="node_y" class="node-y-hidden" value="">
+                    <div class="node-pin ctx-socket" title="Context columns — drag a wire here to add a column"></div>
+                    <div class="node-pin cond-socket" title="Condition column — drag a wire here to set the condition"></div>
+                    <div class="node-pin out-pin" title="Output column"></div>
                     <div class="flex items-center gap-3 px-4 py-3 border-b border-gray-200 dark:border-gray-700">
                         <span class="card-badge flex-shrink-0 text-xs font-mono text-indigo-400 bg-indigo-50 dark:bg-indigo-900/30 border border-indigo-200 dark:border-indigo-700 px-2 py-0.5 rounded">Step</span>
                         <input type="text" name="output_column"
@@ -555,6 +591,9 @@ function makeTagCard() {
     // Header
     h += '<input type="hidden" name="node_x" class="node-x-hidden" value="">';
     h += '<input type="hidden" name="node_y" class="node-y-hidden" value="">';
+    h += '<div class="node-pin ctx-socket" title="Context columns — drag a wire here to add a column"></div>';
+    h += '<div class="node-pin cond-socket" title="Condition column — drag a wire here to set the condition"></div>';
+    h += '<div class="node-pin out-pin" title="Output column"></div>';
     h += '<div class="flex items-center gap-3 px-4 py-3 border-b border-gray-200 dark:border-gray-700">';
     h += '  <span class="card-badge flex-shrink-0 text-xs font-mono text-indigo-400 bg-indigo-50 dark:bg-indigo-900/30 border border-indigo-200 dark:border-indigo-700 px-2 py-0.5 rounded">Step</span>';
     h += '  <input type="text" name="output_column" class="flex-1 px-3 py-1.5 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-indigo-500" placeholder="output_column_name" required>';
