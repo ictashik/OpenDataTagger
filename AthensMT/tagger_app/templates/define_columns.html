@@ -85,14 +85,30 @@
     }
     @media (prefers-color-scheme: dark) { .node-pin { border-color: #1f2937; } }
     #tag-container.graph-active .node-pin { display: block; }
-    .ctx-socket  { left: -7px; top: 20px; background: #4f46e5; }
-    .cond-socket { left: -7px; top: 44px; background: #f59e0b; }
-    .out-pin     { right: -7px; top: 20px; background: #10b981; }
+    /* Kept just inside the card rather than straddling its edge (right/left
+       ±7px would sit exactly on the card's overflow-clip boundary —
+       overflow-y:auto on the card computes overflow-x to auto too per the
+       CSS overflow spec, and native mousedown hit-testing is unreliable
+       for a point exactly on that clip edge, even though it paints fine). */
+    .ctx-socket  { left: 3px; top: 20px; background: #4f46e5; }
+    .cond-socket { left: 3px; top: 44px; background: #f59e0b; }
+    .out-pin     { right: 3px; top: 20px; background: #10b981; }
     .node-pin:hover { transform: scale(1.3); }
 
     .gv-wire { stroke: #a5b4fc; stroke-width: 2; fill: none; }
     .gv-wire-cond { stroke: #f59e0b; stroke-dasharray: 5 4; }
+    .gv-wire.selected { stroke: #ef4444; stroke-width: 3; stroke-dasharray: none; }
+    .gv-wire-temp { stroke: #9ca3af; stroke-width: 2; stroke-dasharray: 4 4; fill: none; pointer-events: none; }
+    .gv-wire-hit { stroke: transparent; stroke-width: 14; fill: none; pointer-events: stroke; cursor: pointer; }
     @media (prefers-color-scheme: dark) { .gv-wire { stroke: #6366f1; } .gv-wire-cond { stroke: #d97706; } }
+
+    .node-pin.gv-drop-target { transform: scale(1.6); box-shadow: 0 0 0 5px rgba(16,185,129,0.35); }
+
+    #gv-wire-delete-badge {
+        display: none; position: absolute; width: 20px; height: 20px; margin-left: -10px; margin-top: -10px;
+        border-radius: 50%; background: #ef4444; color: #fff; font-size: 13px; line-height: 1;
+        align-items: center; justify-content: center; cursor: pointer; z-index: 4; border: 2px solid #fff;
+    }
 </style>
 <div class="max-w-4xl mx-auto py-8 space-y-6" id="page-wrap">
 
@@ -216,6 +232,7 @@
             <div id="tag-container" class="space-y-4">
                 <svg id="graph-wires-svg"></svg>
                 <div id="graph-source-node"></div>
+                <div id="gv-wire-delete-badge" title="Delete this connection">&times;</div>
                 {% for entry in config_data %}
                 {% with has_cond=entry.ConditionField %}
                 <div class="tag-card border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden bg-gray-50 dark:bg-gray-900"

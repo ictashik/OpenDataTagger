@@ -186,7 +186,11 @@
             if (graphActive && window.__gvRedrawWires) window.__gvRedrawWires();
         });
     });
-    tagContainer.addEventListener('click', function () {
+    tagContainer.addEventListener('click', function (e) {
+        // Wire clicks (selection) don't change chip/condition state — handled
+        // separately below, and a redraw here would destroy the very wire
+        // element that click just tried to select.
+        if (e.target.closest('#graph-wires-svg')) return;
         if (graphActive && window.__gvRedrawWires) window.__gvRedrawWires();
     });
 
@@ -289,32 +293,108 @@
         return null;
     }
 
+    var SVGNS = 'http://www.w3.org/2000/svg';
+
+    function anchor(el) {
+        var r = el.getBoundingClientRect();
+        var rect = tagContainer.getBoundingClientRect();
+        return {
+            x: (r.left + r.width / 2 - rect.left) / canvas.scale,
+            y: (r.top + r.height / 2 - rect.top) / canvas.scale
+        };
+    }
+
+    function bezierD(a, b) {
+        var bend = Math.max(60, Math.abs(b.x - a.x) * 0.5);
+        return 'M ' + a.x + ' ' + a.y
+            + ' C ' + (a.x + bend) + ' ' + a.y + ', '
+            + (b.x - bend) + ' ' + b.y + ', '
+            + b.x + ' ' + b.y;
+    }
+
+    function cssEsc(s) {
+        return (window.CSS && CSS.escape) ? CSS.escape(s) : String(s).replace(/["\\]/g, '\\$&');
+    }
+
+    var selectedWireHit = null;
+
+    function showDeleteBadge(hit) {
+        var badge = document.getElementById('gv-wire-delete-badge');
+        if (!badge || !hit._fromEl || !hit._toEl) return;
+        var a = anchor(hit._fromEl), b = anchor(hit._toEl);
+        badge.style.left = ((a.x + b.x) / 2) + 'px';
+        badge.style.top = ((a.y + b.y) / 2) + 'px';
+        badge.style.display = 'flex';
+        badge.dataset.kind = hit.dataset.kind;
+        badge.dataset.targetIdx = hit.dataset.targetIdx;
+        badge.dataset.col = hit.dataset.col;
+    }
+    function hideDeleteBadge() {
+        var badge = document.getElementById('gv-wire-delete-badge');
+        if (badge) badge.style.display = 'none';
+    }
+    function selectWire(hit) {
+        clearWireSelection();
+        selectedWireHit = hit;
+        hit.classList.add('selected');
+        if (hit._visiblePath) hit._visiblePath.classList.add('selected');
+        showDeleteBadge(hit);
+    }
+    function clearWireSelection() {
+        if (selectedWireHit) {
+            selectedWireHit.classList.remove('selected');
+            if (selectedWireHit._visiblePath) selectedWireHit._visiblePath.classList.remove('selected');
+        }
+        selectedWireHit = null;
+        hideDeleteBadge();
+    }
+
+    function disconnectContext(card, col) {
+        var cb = card.querySelector('.tag-chip-cb[data-col="' + cssEsc(col) + '"]');
+        if (cb && cb.checked) {
+            cb.checked = false;
+            applyTagChipStyle(cb);
+            updateTagColsHidden(card);
+        }
+    }
+    function disconnectCondition(card, col) {
+        var field = card.querySelector('input[name="condition_field"]');
+        if (field && field.value.trim() === col) field.value = '';
+    }
+    function deleteWire(kind, targetIdx, col) {
+        var cards = Array.from(tagContainer.querySelectorAll('.tag-card'));
+        var card = cards[targetIdx];
+        if (!card) return;
+        if (kind === 'ctx') disconnectContext(card, col);
+        else disconnectCondition(card, col);
+    }
+
     function redrawWires() {
         var svg = document.getElementById('graph-wires-svg');
         if (!svg) return;
+        clearWireSelection();
         while (svg.firstChild) svg.removeChild(svg.firstChild);
         if (!graphActive) return;
 
-        var containerRect = tagContainer.getBoundingClientRect();
-        function anchor(el) {
-            var r = el.getBoundingClientRect();
-            return {
-                x: (r.left + r.width / 2 - containerRect.left) / canvas.scale,
-                y: (r.top + r.height / 2 - containerRect.top) / canvas.scale
-            };
-        }
-        function drawWire(fromEl, toEl, extraClass) {
+        function drawWire(fromEl, toEl, extraClass, meta) {
             if (!fromEl || !toEl) return;
-            var a = anchor(fromEl), b = anchor(toEl);
-            var bend = Math.max(60, Math.abs(b.x - a.x) * 0.5);
-            var d = 'M ' + a.x + ' ' + a.y
-                + ' C ' + (a.x + bend) + ' ' + a.y + ', '
-                + (b.x - bend) + ' ' + b.y + ', '
-                + b.x + ' ' + b.y;
-            var path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+            var d = bezierD(anchor(fromEl), anchor(toEl));
+
+            var hit = document.createElementNS(SVGNS, 'path');
+            hit.setAttribute('d', d);
+            hit.setAttribute('class', 'gv-wire-hit');
+            hit.dataset.kind = meta.kind;
+            hit.dataset.targetIdx = String(meta.targetIdx);
+            hit.dataset.col = meta.col;
+            hit._fromEl = fromEl;
+            hit._toEl = toEl;
+            svg.appendChild(hit);
+
+            var path = document.createElementNS(SVGNS, 'path');
             path.setAttribute('d', d);
             path.setAttribute('class', 'gv-wire' + (extraClass ? ' ' + extraClass : ''));
             svg.appendChild(path);
+            hit._visiblePath = path;
         }
 
         var cards = Array.from(tagContainer.querySelectorAll('.tag-card'));
@@ -323,14 +403,157 @@
             var condSocket = card.querySelector('.cond-socket');
 
             contextColumnsForCard(card, idx).forEach(function (col) {
-                drawWire(findUpstreamPin(col, idx, cards), ctxSocket, 'gv-wire-ctx');
+                drawWire(findUpstreamPin(col, idx, cards), ctxSocket, 'gv-wire-ctx', { kind: 'ctx', targetIdx: idx, col: col });
             });
 
             var condCol = conditionColumnForCard(card);
-            if (condCol) drawWire(findUpstreamPin(condCol, idx, cards), condSocket, 'gv-wire-cond');
+            if (condCol) drawWire(findUpstreamPin(condCol, idx, cards), condSocket, 'gv-wire-cond', { kind: 'cond', targetIdx: idx, col: condCol });
         });
     }
     window.__gvRedrawWires = redrawWires;
+
+    /* Wire selection (click) + deletion (Delete/Backspace or the × badge). */
+    tagContainer.addEventListener('click', function (e) {
+        var hit = e.target.closest('.gv-wire-hit');
+        if (!hit) return;
+        e.stopPropagation();
+        selectWire(hit);
+    });
+    tagViewport.addEventListener('click', function () {
+        if (graphActive) clearWireSelection();
+    });
+    document.addEventListener('keydown', function (e) {
+        if (!graphActive || !selectedWireHit) return;
+        if (e.key !== 'Delete' && e.key !== 'Backspace') return;
+        var activeTag = (document.activeElement && document.activeElement.tagName) || '';
+        if (activeTag === 'INPUT' || activeTag === 'TEXTAREA') return;
+        e.preventDefault();
+        deleteWire(selectedWireHit.dataset.kind, parseInt(selectedWireHit.dataset.targetIdx, 10), selectedWireHit.dataset.col);
+        clearWireSelection();
+        redrawWires();
+    });
+    var deleteBadge = document.getElementById('gv-wire-delete-badge');
+    if (deleteBadge) deleteBadge.addEventListener('click', function (e) {
+        e.stopPropagation();
+        deleteWire(this.dataset.kind, parseInt(this.dataset.targetIdx, 10), this.dataset.col);
+        clearWireSelection();
+        redrawWires();
+    });
+
+    /* ═══ Drag-to-connect — drag from a source column pin or a tag's output
+       pin onto a downstream tag's context/condition socket. Both ends are
+       resolved through the same chip/condition-field controls the node
+       body already exposes, so a drag is just a faster way to trigger
+       something you could also do by hand inside the node. ═══ */
+    function pinColumnName(pinEl) {
+        if (pinEl.classList.contains('src-pin-dot')) return pinEl.dataset.col;
+        if (pinEl.classList.contains('out-pin')) {
+            var card = pinEl.closest('.tag-card');
+            var inp = card ? card.querySelector('input[name="output_column"]') : null;
+            return inp ? inp.value.trim() : '';
+        }
+        return '';
+    }
+
+    function connectContext(card, colName) {
+        var cb = card.querySelector('.tag-chip-cb[data-col="' + cssEsc(colName) + '"]');
+        if (cb && !cb.checked) {
+            cb.checked = true;
+            applyTagChipStyle(cb);
+            updateTagColsHidden(card);
+        }
+    }
+    function connectCondition(card, colName) {
+        var toggle = card.querySelector('.cond-toggle');
+        var field = card.querySelector('input[name="condition_field"]');
+        if (!field) return;
+        field.value = colName;
+        if (toggle && !toggle.checked) {
+            toggle.checked = true;
+            toggle.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+    }
+
+    var wireDrag = null;
+
+    function containerLocalFromClient(clientX, clientY) {
+        var rect = tagContainer.getBoundingClientRect();
+        return { x: (clientX - rect.left) / canvas.scale, y: (clientY - rect.top) / canvas.scale };
+    }
+
+    function isValidDropTarget(socket, drag) {
+        var card = socket.closest('.tag-card');
+        if (!card) return false;
+        var cards = Array.from(tagContainer.querySelectorAll('.tag-card'));
+        var targetIdx = cards.indexOf(card);
+        if (drag.cardIdx !== -1 && targetIdx <= drag.cardIdx) return false;
+        return true;
+    }
+
+    function socketUnderPoint(clientX, clientY) {
+        var target = document.elementFromPoint(clientX, clientY);
+        return target ? target.closest('.ctx-socket, .cond-socket') : null;
+    }
+
+    function onWireDragMove(e) {
+        if (!wireDrag) return;
+        var a = anchor(wireDrag.fromEl);
+        var b = containerLocalFromClient(e.clientX, e.clientY);
+        wireDrag.tempPath.setAttribute('d', bezierD(a, b));
+
+        document.querySelectorAll('.node-pin.gv-drop-target').forEach(function (el) { el.classList.remove('gv-drop-target'); });
+        var socket = socketUnderPoint(e.clientX, e.clientY);
+        if (socket && isValidDropTarget(socket, wireDrag)) socket.classList.add('gv-drop-target');
+    }
+
+    function onWireDragUp(e) {
+        document.removeEventListener('mousemove', onWireDragMove);
+        document.removeEventListener('mouseup', onWireDragUp);
+        document.body.classList.remove('select-none');
+        document.querySelectorAll('.node-pin.gv-drop-target').forEach(function (el) { el.classList.remove('gv-drop-target'); });
+
+        var drag = wireDrag;
+        wireDrag = null;
+        if (drag && drag.tempPath && drag.tempPath.parentNode) drag.tempPath.parentNode.removeChild(drag.tempPath);
+        if (!drag) return;
+
+        var socket = socketUnderPoint(e.clientX, e.clientY);
+        if (!socket || !isValidDropTarget(socket, drag)) return;
+
+        var colName = pinColumnName(drag.fromEl);
+        if (!colName) return;
+        var targetCard = socket.closest('.tag-card');
+        if (socket.classList.contains('ctx-socket')) connectContext(targetCard, colName);
+        else connectCondition(targetCard, colName);
+        redrawWires();
+    }
+
+    function startWireDrag(pinEl, clientX, clientY) {
+        var cardIdx = -1;
+        var card = pinEl.closest('.tag-card');
+        if (card) cardIdx = Array.from(tagContainer.querySelectorAll('.tag-card')).indexOf(card);
+
+        var svg = document.getElementById('graph-wires-svg');
+        var tempPath = document.createElementNS(SVGNS, 'path');
+        tempPath.setAttribute('class', 'gv-wire gv-wire-temp');
+        svg.appendChild(tempPath);
+
+        wireDrag = { fromEl: pinEl, cardIdx: cardIdx, tempPath: tempPath };
+        tempPath.setAttribute('d', bezierD(anchor(pinEl), containerLocalFromClient(clientX, clientY)));
+        document.body.classList.add('select-none');
+
+        document.addEventListener('mousemove', onWireDragMove);
+        document.addEventListener('mouseup', onWireDragUp);
+    }
+
+    tagContainer.addEventListener('mousedown', function (e) {
+        if (!graphActive) return;
+        var pin = e.target.closest('.src-pin-dot, .out-pin');
+        if (!pin) return;
+        e.preventDefault();
+        e.stopPropagation();
+        startWireDrag(pin, e.clientX, e.clientY);
+    });
 
     buildSourceNodeOnce();
     updateSourceHighlights();
