@@ -92,7 +92,15 @@ def _select_device_dtype():
     if backend == "cuda":
         return "cuda", torch.float16
     if backend == "mps":
-        return "mps", torch.float16
+        # float16 is numerically unstable on PyTorch's MPS backend: the
+        # UNet's denoising loop can overflow to NaN partway through
+        # (reproduced locally — latents were finite through step 5 of 12,
+        # all-NaN from step 6 on). Diffusers casts NaN to 0 without raising,
+        # so generation "succeeds" and silently returns a solid-black image.
+        # float32 avoids the overflow — and in local testing on Apple
+        # Silicon it was faster than float16, not just safer, so there's no
+        # tradeoff being made here.
+        return "mps", torch.float32
     return "cpu", torch.float32
 
 
@@ -218,6 +226,20 @@ def _ensure_scheduler(pipe, scheduler_key):
     _loaded["scheduler_key"] = scheduler_key
 
 
+def _looks_blank(img, tolerance=3):
+    """True when an image is essentially a single flat color across its
+    whole RGB range — the signature of a corrupted (NaN/Inf) decode, which
+    diffusers silently casts to solid black (occasionally solid white)
+    instead of raising (see _select_device_dtype's MPS note for a confirmed
+    case of this). A genuine generation's pixel range is virtually never
+    this narrow, so this check runs unconditionally after every generation —
+    regardless of backend/model/dtype — as a generic safety net rather than
+    one tied to the specific bug that motivated it."""
+    import numpy as np
+    arr = np.asarray(img.convert("RGB"), dtype=np.int16)
+    return bool((arr.max() - arr.min()) <= tolerance)
+
+
 def generate(model_id, prompt, negative_prompt="", width=512, height=512,
              steps=30, guidance_scale=7.5, seed=-1, num_images=1, token=None,
              loras=None, scheduler=None):
@@ -276,6 +298,13 @@ def generate(model_id, prompt, negative_prompt="", width=512, height=512,
 
             if getattr(pipe, "_interrupt", False):
                 raise RuntimeError("Cancelled")
+
+            blank_count = sum(1 for img in result.images if _looks_blank(img))
+            if blank_count:
+                raise RuntimeError(
+                    f"{blank_count}/{len(result.images)} generated image(s) came out "
+                    f"blank (flat color, likely a decode/precision failure) — try again"
+                )
 
             _log(f"Done in {elapsed:.1f}s")
             _set_status("idle", "")
