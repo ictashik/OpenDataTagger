@@ -1,7 +1,70 @@
 {% extends "base.html" %}
+{% load static %}
 
 {% block content %}
-<div class="max-w-4xl mx-auto py-8 space-y-6">
+<style>
+    /* ── Graph view (Define Columns) ─────────────────────────────── */
+    .view-toggle-btn {
+        padding: 0.3rem 0.85rem; font-size: 0.75rem; font-weight: 500;
+        border: 1px solid #d1d5db; background: #fff; color: #6b7280; cursor: pointer;
+    }
+    .view-toggle-btn:first-child { border-radius: 0.375rem 0 0 0.375rem; }
+    .view-toggle-btn:last-child  { border-radius: 0 0.375rem 0.375rem 0; border-left: none; }
+    .view-toggle-btn.active { background: #4f46e5; border-color: #4f46e5; color: #fff; }
+    @media (prefers-color-scheme: dark) {
+        .view-toggle-btn { background: #1f2937; border-color: #4b5563; color: #9ca3af; }
+        .view-toggle-btn.active { background: #4f46e5; border-color: #4f46e5; color: #fff; }
+    }
+
+    #graph-toolbar { display: none; align-items: center; gap: 0.5rem; }
+    #graph-toolbar.active { display: flex; }
+    .graph-toolbar-btn {
+        font-size: 0.75rem; padding: 0.25rem 0.6rem; border-radius: 0.375rem;
+        border: 1px solid #d1d5db; background: #fff; color: #374151; cursor: pointer;
+    }
+    @media (prefers-color-scheme: dark) {
+        .graph-toolbar-btn { background: #1f2937; border-color: #4b5563; color: #d1d5db; }
+    }
+
+    #tag-viewport { position: relative; }
+    #tag-viewport.graph-active {
+        overflow: hidden; height: 70vh; min-height: 480px;
+        border: 1px solid #e5e7eb; border-radius: 0.75rem;
+        background-color: #f9fafb;
+        background-image: radial-gradient(circle, #d1d5db 1px, transparent 1px);
+        background-size: 22px 22px;
+        cursor: grab;
+    }
+    #tag-viewport.graph-active.panning { cursor: grabbing; }
+    @media (prefers-color-scheme: dark) {
+        #tag-viewport.graph-active {
+            background-color: #111827;
+            background-image: radial-gradient(circle, #374151 1px, transparent 1px);
+        }
+    }
+
+    #tag-container.graph-active { position: relative; transform-origin: 0 0; }
+    #tag-container.graph-active > .tag-card {
+        position: absolute; left: var(--nx, 0px); top: var(--ny, 0px);
+        width: 420px; margin: 0; max-height: 80vh; overflow-y: auto;
+    }
+    #tag-container.graph-active .card-badge { cursor: move; }
+    .tag-card { position: relative; z-index: 1; }
+    #tag-container.graph-active > .tag-card.dragging-node {
+        z-index: 5; cursor: grabbing;
+        box-shadow: 0 0 0 2px #4f46e5, 0 8px 24px rgba(0,0,0,0.18);
+    }
+
+    #graph-wires-svg {
+        display: none; position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+        pointer-events: none; overflow: visible; z-index: 0;
+    }
+    #tag-container.graph-active #graph-wires-svg { display: block; }
+
+    #graph-source-node { display: none; }
+    #tag-container.graph-active #graph-source-node { display: block; position: absolute; z-index: 1; }
+</style>
+<div class="max-w-4xl mx-auto py-8 space-y-6" id="page-wrap">
 
     <div>
         <h1 class="text-2xl font-semibold text-gray-900 dark:text-gray-100">Define Columns</h1>
@@ -96,18 +159,42 @@
                         to insert a column reference. Each tag has its own context columns — use <strong>Auto</strong> to detect from prompt references.
                     </p>
                 </div>
-                <button type="button" id="add-tag-btn"
-                    class="ml-4 flex-shrink-0 px-4 py-1.5 rounded-md bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium">
-                    + Add Tag
-                </button>
+                <div class="ml-4 flex-shrink-0 flex items-center gap-2">
+                    <div class="flex">
+                        <button type="button" id="view-list-btn" class="view-toggle-btn active">List View</button>
+                        <button type="button" id="view-graph-btn" class="view-toggle-btn">Graph View</button>
+                    </div>
+                    <button type="button" id="add-tag-btn"
+                        class="px-4 py-1.5 rounded-md bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium">
+                        + Add Tag
+                    </button>
+                </div>
             </div>
 
+            <div id="graph-toolbar">
+                <button type="button" id="zoom-out-btn" class="graph-toolbar-btn" title="Zoom out">−</button>
+                <span id="zoom-pct" class="text-xs text-gray-500 dark:text-gray-400 w-10 text-center">100%</span>
+                <button type="button" id="zoom-in-btn" class="graph-toolbar-btn" title="Zoom in">+</button>
+                <button type="button" id="fit-view-btn" class="graph-toolbar-btn">Fit view</button>
+                <span class="text-xs text-gray-400 dark:text-gray-500 ml-2">
+                    Drag empty space to pan · scroll to zoom · drag a node's "Step" badge to move it ·
+                    drag from a pin to wire a connection
+                </span>
+            </div>
+
+            <div id="tag-viewport">
             <div id="tag-container" class="space-y-4">
+                <svg id="graph-wires-svg"></svg>
+                <div id="graph-source-node"></div>
                 {% for entry in config_data %}
                 {% with has_cond=entry.ConditionField %}
                 <div class="tag-card border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden bg-gray-50 dark:bg-gray-900"
                      data-saved-cols="{{ entry.InputColumns }}"
-                     data-image-params="{{ entry.ImageParams }}">
+                     data-image-params="{{ entry.ImageParams }}"
+                     data-node-x="{{ entry.NodeX }}"
+                     data-node-y="{{ entry.NodeY }}">
+                    <input type="hidden" name="node_x" class="node-x-hidden" value="{{ entry.NodeX }}">
+                    <input type="hidden" name="node_y" class="node-y-hidden" value="{{ entry.NodeY }}">
                     <!-- Card header -->
                     <div class="flex items-center gap-3 px-4 py-3 border-b border-gray-200 dark:border-gray-700">
                         <span class="card-badge flex-shrink-0 text-xs font-mono text-indigo-400 bg-indigo-50 dark:bg-indigo-900/30 border border-indigo-200 dark:border-indigo-700 px-2 py-0.5 rounded">Step</span>
@@ -199,7 +286,11 @@
                 {% if not config_data %}
                 <div class="tag-card border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden bg-gray-50 dark:bg-gray-900"
                      data-saved-cols=""
-                     data-image-params="">
+                     data-image-params=""
+                     data-node-x=""
+                     data-node-y="">
+                    <input type="hidden" name="node_x" class="node-x-hidden" value="">
+                    <input type="hidden" name="node_y" class="node-y-hidden" value="">
                     <div class="flex items-center gap-3 px-4 py-3 border-b border-gray-200 dark:border-gray-700">
                         <span class="card-badge flex-shrink-0 text-xs font-mono text-indigo-400 bg-indigo-50 dark:bg-indigo-900/30 border border-indigo-200 dark:border-indigo-700 px-2 py-0.5 rounded">Step</span>
                         <input type="text" name="output_column"
@@ -280,6 +371,7 @@
                     </div>
                 </div>
                 {% endif %}
+            </div>
             </div>
         </div>
 
@@ -455,10 +547,14 @@ function makeTagCard() {
     div.className = 'tag-card border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden bg-gray-50 dark:bg-gray-900';
     div.dataset.savedCols = '';
     div.dataset.imageParams = '';
+    div.dataset.nodeX = '';
+    div.dataset.nodeY = '';
     var ops = ['==:equals','!=:not equals','contains:contains','not_contains:not contains','is_empty:is empty','is_not_empty:is not empty'];
     var opHtml = ops.map(function(o){var p=o.split(':');return '<option value="'+p[0]+'">'+p[1]+'</option>';}).join('');
     var h = '';
     // Header
+    h += '<input type="hidden" name="node_x" class="node-x-hidden" value="">';
+    h += '<input type="hidden" name="node_y" class="node-y-hidden" value="">';
     h += '<div class="flex items-center gap-3 px-4 py-3 border-b border-gray-200 dark:border-gray-700">';
     h += '  <span class="card-badge flex-shrink-0 text-xs font-mono text-indigo-400 bg-indigo-50 dark:bg-indigo-900/30 border border-indigo-200 dark:border-indigo-700 px-2 py-0.5 rounded">Step</span>';
     h += '  <input type="text" name="output_column" class="flex-1 px-3 py-1.5 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-indigo-500" placeholder="output_column_name" required>';
@@ -1064,5 +1160,7 @@ document.querySelectorAll('.tag-card').forEach(function(card) {
     }
 });
 </script>
+
+<script src="{% static 'tagger_app/js/graph_view.js' %}"></script>
 
 {% endblock %}
