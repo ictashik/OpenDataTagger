@@ -17,39 +17,112 @@
             background-color: #121212;
             color: #e0e0e0;
         }
+        :root {
+            --sidebar-width: 16rem;
+        }
+        .sidebar {
+            width: var(--sidebar-width);
+            transition: width 0.3s ease;
+            overflow: hidden;
+        }
+        .sidebar.collapsed {
+            --sidebar-width: 5rem;
+        }
+        .main-content {
+            margin-left: var(--sidebar-width);
+            transition: margin-left 0.3s ease;
+        }
+        .sidebar .nav-label {
+            transition: opacity 0.2s ease;
+            white-space: nowrap;
+        }
+        .sidebar.collapsed .nav-label {
+            opacity: 0;
+            width: 0;
+            overflow: hidden;
+        }
+        .sidebar .stats-panel {
+            transition: opacity 0.2s ease;
+        }
+        .sidebar.collapsed .stats-panel {
+            opacity: 0;
+            width: 0;
+            overflow: hidden;
+        }
+        .sidebar .sidebar-header-text {
+            transition: opacity 0.2s ease;
+        }
+        .sidebar.collapsed .sidebar-header-text {
+            opacity: 0;
+            width: 0;
+            overflow: hidden;
+        }
+        .toggle-btn {
+            transition: transform 0.3s ease;
+        }
+        .sidebar.collapsed .toggle-btn {
+            transform: rotate(180deg);
+        }
+        .nav-link {
+            justify-content: center;
+        }
+        .sidebar:not(.collapsed) .nav-link {
+            justify-content: flex-start;
+        }
     </style>
 </head>
 <body class="bg-gray-100 dark:bg-gray-900 text-gray-900 dark:text-gray-200">
     
     <!-- Sidebar -->
-    <div class="fixed w-64 h-screen bg-gray-800 text-white p-5 flex flex-col justify-between">
+    <div id="sidebar" class="sidebar fixed h-screen bg-gray-800 text-white p-5 flex flex-col justify-between">
         <div>
-            <h1 class="text-2xl font-semibold mb-3">Athena ODT</h1>
-            <p class="text-gray-400">Open Data Tagger</p>
+            <div class="flex items-center justify-between mb-3">
+                <div class="sidebar-header-text">
+                    <h1 class="text-2xl font-semibold">Athena ODT</h1>
+                    <p class="text-gray-400 text-sm">Open Data Tagger</p>
+                </div>
+                <button id="sidebar-toggle" class="toggle-btn p-1 rounded hover:bg-gray-700 text-gray-400 hover:text-white" title="Toggle sidebar">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
+                </button>
+            </div>
             <nav class="mt-6 space-y-2">
-                <a href="{% url 'home' %}" class="block px-4 py-2 rounded-md bg-gray-700 hover:bg-gray-600 flex items-center gap-2">
-                    <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l9-9 9 9M5 10v9a1 1 0 001 1h4v-5h4v5h4a1 1 0 001-1v-9"/></svg>
-                    Home
+                <a href="{% url 'home' %}" class="nav-link block px-4 py-2 rounded-md bg-gray-700 hover:bg-gray-600 flex items-center gap-3" title="Home">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-gray-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l9-9 9 9M5 10v9a1 1 0 001 1h4v-5h4v5h4a1 1 0 001-1v-9"/></svg>
+                    <span class="nav-label">Home</span>
                 </a>
-                <a href="{% url 'upload_file' %}" class="block px-4 py-2 rounded-md bg-gray-700 hover:bg-gray-600">Upload CSV</a>
-                <a href="{% url 'define_columns' %}" class="block px-4 py-2 rounded-md bg-gray-700 hover:bg-gray-600">Define Columns</a>
-                <a href="{% url 'tagging' %}" class="block px-4 py-2 rounded-md bg-gray-700 hover:bg-gray-600">Tagging</a>
-                <a href="{% url 'results' %}" class="block px-4 py-2 rounded-md bg-gray-700 hover:bg-gray-600">Results</a>
-                <a href="{% url 'gallery_all' %}" class="block px-4 py-2 rounded-md bg-gray-700 hover:bg-gray-600">Gallery</a>
-                <a href="{% url 'connection_editor' %}" class="block px-4 py-2 rounded-md bg-gray-700 hover:bg-gray-600 flex items-center gap-2">
-                    <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M12 5l7 7-7 7"/></svg>
-                    Connection
+                <a href="{% url 'upload_file' %}" class="nav-link block px-4 py-2 rounded-md bg-gray-700 hover:bg-gray-600 flex items-center gap-3" title="Upload CSV">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-gray-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/></svg>
+                    <span class="nav-label">Upload CSV</span>
                 </a>
-                <a href="{% url 'image_backend' %}" class="block px-4 py-2 rounded-md bg-gray-700 hover:bg-gray-600 flex items-center gap-2">
-                    <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
-                    Image Backend
+                <a href="{% url 'define_columns' %}" class="nav-link block px-4 py-2 rounded-md bg-gray-700 hover:bg-gray-600 flex items-center gap-3" title="Define Columns">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-gray-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"/></svg>
+                    <span class="nav-label">Define Columns</span>
+                </a>
+                <a href="{% url 'tagging' %}" class="nav-link block px-4 py-2 rounded-md bg-gray-700 hover:bg-gray-600 flex items-center gap-3" title="Tagging">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-gray-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A2 2 0 013 12V7a4 4 0 014-4z"/></svg>
+                    <span class="nav-label">Tagging</span>
+                </a>
+                <a href="{% url 'results' %}" class="nav-link block px-4 py-2 rounded-md bg-gray-700 hover:bg-gray-600 flex items-center gap-3" title="Results">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-gray-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
+                    <span class="nav-label">Results</span>
+                </a>
+                <a href="{% url 'gallery_all' %}" class="nav-link block px-4 py-2 rounded-md bg-gray-700 hover:bg-gray-600 flex items-center gap-3" title="Gallery">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-gray-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+                    <span class="nav-label">Gallery</span>
+                </a>
+                <a href="{% url 'connection_editor' %}" class="nav-link block px-4 py-2 rounded-md bg-gray-700 hover:bg-gray-600 flex items-center gap-3" title="Connection">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-gray-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/></svg>
+                    <span class="nav-label">Connection</span>
+                </a>
+                <a href="{% url 'image_backend' %}" class="nav-link block px-4 py-2 rounded-md bg-gray-700 hover:bg-gray-600 flex items-center gap-3" title="Image Backend">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-gray-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+                    <span class="nav-label">Image Backend</span>
                 </a>
             </nav>
         </div>
         
-        
         <!-- LLM Stats -->
-        <div class="p-4 bg-gray-900 rounded-lg text-gray-300 space-y-3">
+        <div class="stats-panel p-4 bg-gray-900 rounded-lg text-gray-300 space-y-3">
             <div>
                 <h5 class="text-lg font-medium text-white">LLM Status</h5>
                 <p class="text-sm">Model: <span id="llm-model">N/A</span></p>
@@ -67,7 +140,7 @@
     </div>
     
     <!-- Main Content -->
-    <div class="ml-64 p-10">
+    <div class="main-content p-10">
         {% block content %}{% endblock %}
     </div>
 
@@ -119,6 +192,19 @@
         updateLLMStats();
         setInterval(updateImageStats, 3000);
         updateImageStats();
+
+        // Sidebar collapse toggle
+        const sidebar = document.getElementById('sidebar');
+        const toggleBtn = document.getElementById('sidebar-toggle');
+
+        if (localStorage.getItem('sidebarCollapsed') === 'true') {
+            sidebar.classList.add('collapsed');
+        }
+
+        toggleBtn.addEventListener('click', () => {
+            sidebar.classList.toggle('collapsed');
+            localStorage.setItem('sidebarCollapsed', sidebar.classList.contains('collapsed'));
+        });
     </script>
 </body>
 </html>
