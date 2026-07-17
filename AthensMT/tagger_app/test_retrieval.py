@@ -25,6 +25,27 @@ stays fast and fully offline:
 Requires a local Ollama server (defaults assume `llama3.2:1b` is pulled,
 used for both chat and embeddings — override via RAG_TEST_HOST/PORT/
 RAG_TEST_MODEL/RAG_TEST_EMBED_MODEL env vars).
+
+Measured on this machine, embedding model choice matters a lot — pull a
+dedicated embedding model if you have the disk space (274MB):
+
+    ollama pull nomic-embed-text
+    RAG_STRESS_FULL=1 RAG_TEST_EMBED_MODEL=nomic-embed-text \
+        python manage.py test tagger_app.test_retrieval.StressFullDatasetTests -v 2
+
+  Full 4274-row glycemicindex_data.csv build, same machine:
+                        llama3.2:1b        nomic-embed-text
+    embed throughput    11.1 rows/sec      76.5 rows/sec   (~6.9x faster)
+    vector dims         2048               768             (smaller index)
+    "Chocolate mudcake" query self-match   not in top-5     #1 (score 0.73)
+    "White bread" top score                0.44             0.70
+    "Instant noodles" top score            0.43             0.73
+
+  llama3.2:1b is a chat model repurposed for embeddings and works, but
+  clusters chunks by shared boilerplate (citation/manufacturer text)
+  rather than the distinguishing food name. nomic-embed-text is smaller,
+  faster, and noticeably more discriminative — the better default for
+  anyone who can spare the one-time download.
 """
 import io
 import json
