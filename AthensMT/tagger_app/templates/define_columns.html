@@ -16,14 +16,42 @@
         .view-toggle-btn.active { background: #4f46e5; border-color: #4f46e5; color: #fff; }
     }
 
-    #graph-toolbar { display: none; align-items: center; gap: 0.5rem; }
+    /* Graph mode is a chrome-less canvas: no header, just the sidebar and the
+       dotted view. The only visible controls are two small floating
+       clusters — an escape hatch top-left, and zoom/actions bottom-right —
+       both anchored to #tags-card (position:fixed in graph mode, see below),
+       so "bottom-right"/"top-left" always mean the canvas's own corners. */
+    #graph-toolbar {
+        display: none; flex-direction: column; gap: 0.4rem;
+        position: absolute; bottom: 1.25rem; right: 1.25rem; z-index: 41;
+        background: rgba(255,255,255,0.95); padding: 0.6rem; border-radius: 0.6rem;
+        border: 1px solid #e5e7eb; box-shadow: 0 4px 16px rgba(0,0,0,0.12);
+    }
     #graph-toolbar.active { display: flex; }
+    .gv-toolbar-row { display: flex; align-items: center; gap: 0.4rem; }
     .graph-toolbar-btn {
         font-size: 0.75rem; padding: 0.25rem 0.6rem; border-radius: 0.375rem;
         border: 1px solid #d1d5db; background: #fff; color: #374151; cursor: pointer;
     }
+    #gv-start-tagging-btn {
+        font-size: 0.8rem; font-weight: 600; padding: 0.4rem 0.9rem; border-radius: 0.375rem;
+        border: none; background: #4f46e5; color: #fff; cursor: pointer; white-space: nowrap;
+    }
+    #gv-start-tagging-btn:hover { background: #4338ca; }
     @media (prefers-color-scheme: dark) {
+        #graph-toolbar { background: rgba(31,41,55,0.95); border-color: #374151; }
         .graph-toolbar-btn { background: #1f2937; border-color: #4b5563; color: #d1d5db; }
+    }
+
+    #gv-back-to-list-btn {
+        display: none; position: absolute; top: 1.25rem; left: 1.25rem; z-index: 41;
+        font-size: 0.75rem; font-weight: 500; padding: 0.3rem 0.85rem; border-radius: 0.375rem;
+        border: 1px solid #d1d5db; background: rgba(255,255,255,0.95); color: #374151; cursor: pointer;
+        box-shadow: 0 4px 16px rgba(0,0,0,0.12);
+    }
+    #tags-card.gv-fullscreen #gv-back-to-list-btn { display: block; }
+    @media (prefers-color-scheme: dark) {
+        #gv-back-to-list-btn { background: rgba(31,41,55,0.95); border-color: #4b5563; color: #d1d5db; }
     }
 
     /* Graph mode takes over the whole content area: the heading and the
@@ -94,9 +122,10 @@
     #tag-container.graph-active #graph-source-node {
         display: block; position: absolute; left: var(--nx, 40px); top: var(--ny, 40px); z-index: 1;
     }
-    .src-pin-dot { width: 10px; height: 10px; border-radius: 50%; background: #d1d5db; flex-shrink: 0; cursor: crosshair; }
-    .src-pin-dot.active { background: #4f46e5; }
-    @media (prefers-color-scheme: dark) { .src-pin-dot { background: #4b5563; } }
+    /* Each dot's color is per-column (inline style, see graph_view.js);
+       opacity — not color — shows whether it's in the global selection. */
+    .src-pin-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; cursor: crosshair; opacity: 0.4; }
+    .src-pin-dot.active { opacity: 1; }
 
     .node-pin {
         display: none; position: absolute; width: 14px; height: 14px; border-radius: 50%;
@@ -111,15 +140,18 @@
        for a point exactly on that clip edge, even though it paints fine). */
     .ctx-socket  { left: 3px; top: 20px; background: #4f46e5; }
     .cond-socket { left: 3px; top: 44px; background: #f59e0b; }
-    .out-pin     { right: 3px; top: 20px; background: #10b981; }
+    .out-pin     { right: 3px; top: 20px; } /* background: per-column, set inline in graph_view.js */
     .node-pin:hover { transform: scale(1.3); }
 
-    .gv-wire { stroke: #a5b4fc; stroke-width: 2; fill: none; }
-    .gv-wire-cond { stroke: #f59e0b; stroke-dasharray: 5 4; }
-    .gv-wire.selected { stroke: #ef4444; stroke-width: 3; stroke-dasharray: none; }
+    /* Stroke color is per-column (inline style, see graph_view.js) — only
+       the dash pattern (context vs condition) and selected-state override
+       are CSS. !important on .selected is needed since it must win over
+       each wire's own inline per-column color. */
+    .gv-wire { stroke-width: 2; fill: none; }
+    .gv-wire-cond { stroke-dasharray: 5 4; }
+    .gv-wire.selected { stroke: #ef4444 !important; stroke-width: 3 !important; stroke-dasharray: none !important; }
     .gv-wire-temp { stroke: #9ca3af; stroke-width: 2; stroke-dasharray: 4 4; fill: none; pointer-events: none; }
     .gv-wire-hit { stroke: transparent; stroke-width: 14; fill: none; pointer-events: stroke; cursor: pointer; }
-    @media (prefers-color-scheme: dark) { .gv-wire { stroke: #6366f1; } .gv-wire-cond { stroke: #d97706; } }
 
     .node-pin.gv-drop-target { transform: scale(1.6); box-shadow: 0 0 0 5px rgba(16,185,129,0.35); }
 
@@ -226,7 +258,7 @@
 
         <!-- ── Step 3: Output Tag Definitions ── -->
         <div class="bg-white dark:bg-gray-800 rounded-lg shadow p-6 space-y-4" id="tags-card">
-            <div class="flex items-start justify-between">
+            <div class="flex items-start justify-between" id="tags-header-row">
                 <div>
                     <h2 class="text-base font-semibold text-gray-800 dark:text-gray-100">2. Output Tags &amp; Prompts</h2>
                     <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
@@ -247,15 +279,22 @@
                 </div>
             </div>
 
+            <!-- Graph-mode-only floating chrome — no header, just the sidebar and
+                 the full dotted canvas, with a minimal escape hatch (top-left) and
+                 action cluster (bottom-right, see CSS for #graph-toolbar). -->
+            <button type="button" id="gv-back-to-list-btn" title="Back to List View">← List View</button>
+
             <div id="graph-toolbar">
-                <button type="button" id="zoom-out-btn" class="graph-toolbar-btn" title="Zoom out">−</button>
-                <span id="zoom-pct" class="text-xs text-gray-500 dark:text-gray-400 w-10 text-center">100%</span>
-                <button type="button" id="zoom-in-btn" class="graph-toolbar-btn" title="Zoom in">+</button>
-                <button type="button" id="fit-view-btn" class="graph-toolbar-btn">Fit view</button>
-                <span class="text-xs text-gray-400 dark:text-gray-500 ml-2">
-                    Drag empty space to pan · scroll to zoom · drag a node's header to move it ·
-                    drag from a pin to wire a connection
-                </span>
+                <div class="gv-toolbar-row">
+                    <button type="button" id="zoom-out-btn" class="graph-toolbar-btn" title="Zoom out">−</button>
+                    <span id="zoom-pct" class="text-xs text-gray-500 dark:text-gray-400 w-10 text-center">100%</span>
+                    <button type="button" id="zoom-in-btn" class="graph-toolbar-btn" title="Zoom in">+</button>
+                    <button type="button" id="fit-view-btn" class="graph-toolbar-btn">Fit view</button>
+                </div>
+                <div class="gv-toolbar-row">
+                    <button type="button" id="gv-add-tag-btn" class="graph-toolbar-btn">+ Add Tag</button>
+                    <button type="submit" id="gv-start-tagging-btn">Start Tagging →</button>
+                </div>
             </div>
 
             <div id="tag-viewport">
@@ -458,7 +497,7 @@
             </div>
         </div>
 
-        <button type="submit"
+        <button type="submit" id="list-submit-btn"
             class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2.5 px-4 rounded-lg shadow-md text-sm">
             Save &amp; Start Tagging →
         </button>
@@ -574,14 +613,24 @@ function applyTagChipStyle(cb) {
         : 'background:transparent;border-color:#d1d5db;color:#6b7280;padding:2px 8px;border-radius:9999px;font-size:11px;border-width:1px;';
 }
 
+// Must match utils.py's NO_CONTEXT_COLUMNS.
+var NO_CONTEXT_COLUMNS = '__NONE__';
+
 function updateTagColsHidden(card) {
     var hidden   = card.querySelector('.tag-cols-hidden');
     if (!hidden) return;
     var allCbs   = card.querySelectorAll('.tag-chip-cb');
     var checked  = [];
     allCbs.forEach(function(cb) { if (cb.checked) checked.push(cb.dataset.col); });
-    // Empty string = "use all context" (fall-through behaviour)
-    hidden.value = (checked.length === allCbs.length || allCbs.length === 0) ? '' : checked.join(',');
+    if (allCbs.length === 0) {
+        hidden.value = '';                    // nothing to pick from — unset
+    } else if (checked.length === allCbs.length) {
+        hidden.value = '';                    // everything checked — "use all" (fall-through)
+    } else if (checked.length === 0) {
+        hidden.value = NO_CONTEXT_COLUMNS;    // explicitly zero — distinct from "unset"
+    } else {
+        hidden.value = checked.join(',');
+    }
 }
 
 function rebuildTagChips(card) {

@@ -22,6 +22,9 @@
     var pageHeading  = document.getElementById('page-heading');
     var globalContextCard = document.getElementById('global-context-card');
     var imageSettingsCard = document.getElementById('image-settings-card');
+    var tagsHeaderRow = document.getElementById('tags-header-row');
+    var listSubmitBtn = document.getElementById('list-submit-btn');
+    var backToListBtn = document.getElementById('gv-back-to-list-btn');
     if (!tagViewport || !tagContainer || !listBtn || !graphBtn) return;
 
     var graphActive = false;
@@ -30,6 +33,31 @@
 
     var MIN_SCALE = 0.3, MAX_SCALE = 1.75;
     var NODE_START_X = 360, NODE_SPACING_X = 460, NODE_START_Y = 40;
+
+    /* ═══ Per-column color coding — every distinct column (CSV or a tag's
+       own output) gets a consistent color, applied to its source/output pin
+       and every wire that carries it, so you can trace a column across the
+       graph at a glance. Assigned by position (CSV columns in order, then
+       each tag's output continuing the sequence) so it's stable for a given
+       pipeline shape without needing to persist anything. ═══ */
+    var WIRE_PALETTE = [
+        '#f43f5e', '#f97316', '#eab308', '#84cc16', '#22c55e', '#14b8a6',
+        '#06b6d4', '#3b82f6', '#8b5cf6', '#d946ef', '#ec4899', '#78716c'
+    ];
+    function colorIndexForColumn(colName) {
+        var all = window.ALL_COLUMNS || [];
+        var srcIdx = all.indexOf(colName);
+        if (srcIdx !== -1) return srcIdx;
+        var cards = Array.from(tagContainer.querySelectorAll('.tag-card'));
+        for (var j = 0; j < cards.length; j++) {
+            var inp = cards[j].querySelector('input[name="output_column"]');
+            if (inp && inp.value.trim() === colName) return all.length + j;
+        }
+        return 0;
+    }
+    function colorForColumn(colName) {
+        return WIRE_PALETTE[colorIndexForColumn(colName) % WIRE_PALETTE.length];
+    }
 
     /* ═══ Node position (persisted via --nx/--ny + hidden node_x/node_y) ═══ */
     function getPos(card) {
@@ -77,8 +105,31 @@
         applyCanvasTransform();
     }
 
+    /* A wheel over a textarea (prompt template, negative prompt, ...) or a
+       node body that's internally scrolling (tall image-mode nodes) should
+       scroll that element, not zoom the canvas — but only while it still
+       has room to scroll in that direction; once it hits its own top/bottom
+       the wheel "escapes" to zoom, matching how nested-scroll areas usually
+       feel. */
+    function scrollableAncestor(el) {
+        while (el && el !== tagViewport) {
+            if (el.scrollHeight > el.clientHeight + 1) {
+                var overflowY = getComputedStyle(el).overflowY;
+                if (overflowY === 'auto' || overflowY === 'scroll') return el;
+            }
+            el = el.parentElement;
+        }
+        return null;
+    }
+
     tagViewport.addEventListener('wheel', function (e) {
         if (!graphActive) return;
+        var scrollEl = scrollableAncestor(e.target);
+        if (scrollEl) {
+            var atTop = scrollEl.scrollTop <= 0;
+            var atBottom = scrollEl.scrollTop + scrollEl.clientHeight >= scrollEl.scrollHeight - 1;
+            if ((e.deltaY < 0 && !atTop) || (e.deltaY > 0 && !atBottom)) return;
+        }
         e.preventDefault();
         var rect = tagViewport.getBoundingClientRect();
         var factor = e.deltaY < 0 ? 1.1 : (1 / 1.1);
@@ -255,9 +306,10 @@
         html += '  <span class="text-xs font-semibold text-gray-700 dark:text-gray-200">CSV Columns</span>';
         html += '</div>';
         html += '<div class="src-pin-list py-1">';
-        (window.ALL_COLUMNS || []).forEach(function (col) {
+        (window.ALL_COLUMNS || []).forEach(function (col, i) {
+            var color = WIRE_PALETTE[i % WIRE_PALETTE.length];
             html += '<div class="flex items-center gap-2 px-3 py-1 text-xs" style="white-space:nowrap;">'
-                + '<span class="src-pin-dot" data-col="' + escAttr(col) + '"></span>'
+                + '<span class="src-pin-dot" data-col="' + escAttr(col) + '" style="background:' + color + ';"></span>'
                 + '<span class="src-pin-label truncate text-gray-400 dark:text-gray-500" style="max-width:170px;">' + escHtml(col) + '</span>'
                 + '</div>';
         });
@@ -296,8 +348,9 @@
     function contextColumnsForCard(card, idx) {
         var hidden = card.querySelector('.tag-cols-hidden');
         var val = hidden ? hidden.value.trim() : '';
+        if (val === (window.NO_CONTEXT_COLUMNS || '__NONE__')) return []; // explicitly zero
         var avail = getAvailableColsForCard(idx);
-        if (!val) return avail; // empty = "use all available"
+        if (!val) return avail; // unset = "use all available"
         var wanted = val.split(',').map(function (s) { return s.trim(); }).filter(Boolean);
         return wanted.filter(function (c) { return avail.indexOf(c) !== -1; });
     }
@@ -412,6 +465,7 @@
         function drawWire(fromEl, toEl, extraClass, meta) {
             if (!fromEl || !toEl) return;
             var d = bezierD(anchor(fromEl), anchor(toEl));
+            var color = colorForColumn(meta.col);
 
             var hit = document.createElementNS(SVGNS, 'path');
             hit.setAttribute('d', d);
@@ -426,6 +480,7 @@
             var path = document.createElementNS(SVGNS, 'path');
             path.setAttribute('d', d);
             path.setAttribute('class', 'gv-wire' + (extraClass ? ' ' + extraClass : ''));
+            path.style.stroke = color;
             svg.appendChild(path);
             hit._visiblePath = path;
         }
@@ -434,6 +489,10 @@
         cards.forEach(function (card, idx) {
             var ctxSocket = card.querySelector('.ctx-socket');
             var condSocket = card.querySelector('.cond-socket');
+            var outPin = card.querySelector('.out-pin');
+            var outNameInput = card.querySelector('input[name="output_column"]');
+            var outName = outNameInput ? outNameInput.value.trim() : '';
+            if (outPin) outPin.style.background = outName ? colorForColumn(outName) : '#9ca3af';
 
             contextColumnsForCard(card, idx).forEach(function (col) {
                 drawWire(findUpstreamPin(col, idx, cards), ctxSocket, 'gv-wire-ctx', { kind: 'ctx', targetIdx: idx, col: col });
@@ -607,6 +666,11 @@
         if (pageHeading) pageHeading.style.display = graphActive ? 'none' : '';
         if (globalContextCard) globalContextCard.style.display = graphActive ? 'none' : '';
         if (imageSettingsCard) imageSettingsCard.style.display = graphActive ? 'none' : '';
+        // No container header in graph mode at all — title/description and the
+        // original toggle+add-tag row hide too; the floating back-to-list
+        // button and bottom-right cluster (toolbar) are the only chrome left.
+        if (tagsHeaderRow) tagsHeaderRow.style.display = graphActive ? 'none' : '';
+        if (listSubmitBtn) listSubmitBtn.style.display = graphActive ? 'none' : '';
         if (graphActive) {
             initNodePositions();
             applyCanvasTransform();
@@ -618,6 +682,13 @@
 
     listBtn.addEventListener('click', function () { setMode('list'); });
     graphBtn.addEventListener('click', function () { setMode('graph'); });
+    if (backToListBtn) backToListBtn.addEventListener('click', function () { setMode('list'); });
+
+    // The floating "+ Add Tag" in the bottom-right cluster delegates to the
+    // real (now-hidden) button rather than duplicating its card-creation
+    // logic, which lives in the inline list-view script.
+    var gvAddTagBtn = document.getElementById('gv-add-tag-btn');
+    if (gvAddTagBtn && addTagBtn) gvAddTagBtn.addEventListener('click', function () { addTagBtn.click(); });
 
     var savedMode = null;
     try { savedMode = localStorage.getItem('odt_graph_view_mode'); } catch (e) {}

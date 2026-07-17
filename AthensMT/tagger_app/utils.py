@@ -33,6 +33,11 @@ PAUSE_FLAGS = {}     # session_key -> bool  (True = paused)
 PROGRESS_STATUS = {} # session_key -> dict
 CANCEL_FLAGS = {}    # session_key -> bool  (True = stop ASAP, e.g. project was deleted)
 
+# Sentinel stored in a tag's InputColumns when the user explicitly picks zero
+# context columns (the "None" chip-picker button) — distinct from '' (unset),
+# which means "no override, fall through to the globally-selected columns".
+NO_CONTEXT_COLUMNS = '__NONE__'
+
 _stats_lock    = threading.Lock()
 _projects_lock = threading.Lock()
 
@@ -980,7 +985,12 @@ def render_tag_prompt(definition, full_context, all_context):
     """
     prompt_template = definition['PromptTemplate']
     tag_input_str = definition.get('InputColumns', '').strip()
-    if tag_input_str:
+    if tag_input_str == NO_CONTEXT_COLUMNS:
+        # Explicitly "None" via the UI's chip picker — distinct from '' (unset,
+        # falls through to full_context below): the user deliberately chose
+        # zero context columns, so give the LLM none rather than everything.
+        display_context = {}
+    elif tag_input_str:
         tag_cols = {c.strip() for c in tag_input_str.split(',') if c.strip()}
         display_context = {k: v for k, v in all_context.items() if k in tag_cols}
         if not display_context:
