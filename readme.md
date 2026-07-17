@@ -154,9 +154,9 @@ Starts the app and `sd_server` on one Docker network. In the app's **Image Backe
 For **Text** mode projects that need to cross-check rows against bulk reference data — structured (a canonical values table) or unstructured (a spec/standards document) — rather than fit it all into a prompt.
 
 1. In the **Connection Editor**, set an **Embedding Model** alongside the usual chat model — Ollama serves both from the same host/port, so there's nothing new to install or run. Prefer a dedicated embedding model like `nomic-embed-text` (274MB) over reusing a chat model: on a stress test against a real 4274-row dataset, a chat model repurposed for embeddings ran ~7x slower and clustered matches by shared boilerplate text rather than the actual distinguishing content, while `nomic-embed-text` correctly ranked the right match first. A chat-only model (no embedding support at all) fails the index build with a clear error rather than silently producing bad results.
-2. On **Upload**, attach a **Reference Dataset** (`.csv` for structured rows, `.txt`/`.md`/`.pdf` for prose) alongside your main CSV.
-3. On **Define Columns**, click **Build Index** once — the reference file is chunked (one chunk per CSV row, or windowed paragraphs for text/PDF) and embedded, then stored on disk next to the project's other output.
-4. Check **Ground with reference data** on any output tag and set how many matches (Top-K) to retrieve. At tagging time, the closest reference chunks for that row are appended to the prompt as a "Reference Data" block, and the matched sources are recorded in a `<column>_sources` column for review.
+2. On **Upload** (or later, from **Define Columns**), attach as many **Reference Dataset** files as you like — any mix of `.csv` (structured rows) and `.txt`/`.md`/`.pdf` (prose). Each file gets a type badge, size, and (once indexed) chunk count, with its own **Remove** button.
+3. On **Define Columns**, the Reference Data card shows a live chunk-count preview before you build, and click **Build Index** once — every attached file is chunked (one chunk per CSV row, or windowed paragraphs for text/PDF) and embedded into one combined index, with a progress bar and an estimated-time-remaining readout while it runs.
+4. Check **Ground with reference data** on any output tag and set how many matches (Top-K) to retrieve. At tagging time, the closest reference chunks for that row (from any attached file) are appended to the prompt as a "Reference Data" block, and the matched sources — labeled with their originating filename — are recorded in a `<column>_sources` column for review.
 
 ## Project Structure
 
@@ -181,6 +181,7 @@ OpenDataTagger/
     ├── projects.csv               # project registry
     ├── connections.csv            # Ollama connection history
     ├── image_connections.csv      # SD server connection history
+    ├── rag_projects.json          # retrieval: reference files + index state per project
     ├── stats.csv                  # per-call token/latency log
     ├── media/                     # uploads, tagged output, generated images
     ├── AthensMT/
@@ -226,7 +227,7 @@ OpenDataTagger/
   Image generation talks to `sd_server` via `tagger_app/utils.py`, using the most-recently-used entry in `image_connections.csv` (falls back to `SD_SERVER_DEFAULT` in `settings.py`). Manage this from the Image Backend page.
 
 - **Retrieval Integration:**
-  Grounding text tags against a reference dataset reuses the active `connections.csv` entry's `embedding_model` field — no separate connection to configure. A built index lives at `media/<project_id>/reference_index/` (`vectors.npy`, `meta.jsonl`, `manifest.json`); changing the embedding model marks it stale until rebuilt.
+  Grounding text tags against reference data reuses the active `connections.csv` entry's `embedding_model` field — no separate connection to configure. Which projects use retrieval, and every reference file they've attached (filename, type, size, chunk count), is tracked in `rag_projects.json` — kept separate from `projects.csv` so mode-agnostic project data stays untouched. A built index lives at `media/<project_id>/reference_index/` (`vectors.npy`, `meta.jsonl`, `manifest.json`) combining every attached file; changing the embedding model, or adding/removing a reference file, marks it stale until rebuilt.
 
 - **Caching:**
   Django's `LocMemCache` tracks real-time LLM/image-generation usage statistics and tagging progress. It's in-memory only and resets on server restart.

@@ -29,6 +29,7 @@ CONNECTIONS_CSV       = os.path.join(_base, '..', 'connections.csv')
 IMAGE_CONNECTIONS_CSV = os.path.join(_base, '..', 'image_connections.csv')
 PROJECTS_CSV          = os.path.join(_base, '..', 'projects.csv')
 STATS_CSV             = os.path.join(_base, '..', 'stats.csv')
+RAG_PROJECTS_JSON     = os.path.join(_base, '..', 'rag_projects.json')
 
 PAUSE_FLAGS = {}     # session_key -> bool  (True = paused)
 PROGRESS_STATUS = {} # session_key -> dict
@@ -1188,12 +1189,6 @@ def load_projects():
             df['image_format'] = df['image_format'].fillna('png').replace('', 'png').astype(str)
         else:
             df['image_format'] = 'png'
-        # Optional reference dataset for retrieval-augmented (grounded)
-        # text tagging — older registries predate this column.
-        if 'reference_path' in df.columns:
-            df['reference_path'] = df['reference_path'].fillna('').astype(str)
-        else:
-            df['reference_path'] = ''
         return df.sort_values('last_updated', ascending=False).to_dict('records')
     except Exception as e:
         print(f"Error loading projects: {e}")
@@ -1204,7 +1199,7 @@ def get_project(project_id):
     return next((p for p in load_projects() if str(p['project_id']) == str(project_id)), None)
 
 
-def save_project(project_id, name, csv_path, config_path='', mode='text', reference_path=''):
+def save_project(project_id, name, csv_path, config_path='', mode='text'):
     path = os.path.normpath(PROJECTS_CSV)
     with _projects_lock:
         projects = load_projects()
@@ -1225,13 +1220,11 @@ def save_project(project_id, name, csv_path, config_path='', mode='text', refere
                 'mode': mode or 'text',
                 'image_naming_column': '',
                 'image_format': 'png',
-                'reference_path': reference_path or '',
             })
         else:
             existing['last_updated'] = now
             existing['config_path'] = config_path or existing.get('config_path', '')
             existing['mode'] = mode or existing.get('mode', 'text')
-            existing['reference_path'] = reference_path or existing.get('reference_path', '')
         pd.DataFrame(projects).to_csv(path, index=False)
 
 
@@ -1273,6 +1266,8 @@ def delete_project(project_id):
         project_dir = os.path.dirname(os.path.abspath(target['csv_path']))
         if os.path.basename(project_dir) == str(project_id):
             shutil.rmtree(project_dir, ignore_errors=True)
+
+    remove_rag_project(project_id)
 
 
 def _project_image_settings(project_id):
@@ -1446,19 +1441,26 @@ def parse_retrieval_config(definition):
 
 
 # ─── Reference data (retrieval-augmented tagging) ───────────────────────────
-# Grounds text-mode tags against a bulk reference dataset (structured CSV or
-# unstructured txt/md/PDF) the user attaches to a project — too large to fit
-# in a prompt, so only the most relevant chunks are pulled in per row. No new
-# server: embeddings go through the same Ollama connection already used for
-# tagging (see embed_texts above), and the index is a flat file on disk next
-# to the project's other output, not a hosted vector DB.
+# Grounds text-mode tags against bulk reference data (structured CSV and/or
+# unstructured txt/md/PDF, any number of files) a project attaches — too
+# large to fit in a prompt, so only the most relevant chunks are pulled in
+# per row. No new server: embeddings go through the same Ollama connection
+# already used for tagging (see embed_texts above), and the index is a flat
+# file on disk next to the project's other output, not a hosted vector DB.
+#
+# Which projects use RAG, and which files/embedding model/index state each
+# one has, is tracked in one maintained registry — rag_projects.json — kept
+# separate from projects.csv (which stays mode-agnostic) the same way
+# image-mode settings live inline on the project row but SD server state
+# lives in image_connections.csv rather than being crammed in beside it.
 
 REFERENCE_CHUNK_SIZE    = 800  # characters, for unstructured text/PDF chunking
 REFERENCE_CHUNK_OVERLAP = 100
 
-REFERENCE_INDEX_STATUS = {}  # project_id -> dict(status, done, total, message)
+REFERENCE_INDEX_STATUS = {}  # project_id -> dict(status, done, total, message, start_time)
 _reference_index_lock  = threading.Lock()
 _reference_index_cache = {}  # project_id -> (vectors_mtime, vectors, meta)
+_rag_registry_lock     = threading.Lock()
 
 
 def _reference_index_dir(project_id):
@@ -1470,32 +1472,164 @@ def _reference_index_dir(project_id):
     return os.path.join(project_dir, 'reference_index')
 
 
+def _reference_files_dir(project_id):
+    proj = get_project(project_id)
+    if proj and proj.get('csv_path'):
+        project_dir = os.path.dirname(os.path.abspath(proj['csv_path']))
+    else:
+        project_dir = os.path.join(settings.MEDIA_ROOT, str(project_id))
+    return os.path.join(project_dir, 'reference')
+
+
+# ─── RAG project registry (rag_projects.json) ───────────────────────────────
+
+def load_rag_registry():
+    path = os.path.normpath(RAG_PROJECTS_JSON)
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _save_rag_registry(registry):
+    path = os.path.normpath(RAG_PROJECTS_JSON)
+    with open(path, 'w') as f:
+        json.dump(registry, f, indent=2)
+
+
+def get_rag_project_entry(project_id):
+    return load_rag_registry().get(str(project_id))
+
+
+def list_reference_files(project_id):
+    entry = get_rag_project_entry(project_id)
+    return entry.get('reference_files', []) if entry else []
+
+
+def add_reference_file(project_id, filename, path, file_type, size_bytes):
+    """Register one uploaded reference file against a project. Safe to call
+    repeatedly — this is how a project accumulates as many reference files
+    as the user wants, both at initial upload and later from Define Columns."""
+    with _rag_registry_lock:
+        registry = load_rag_registry()
+        entry = registry.setdefault(str(project_id), {
+            'reference_files': [], 'embedding_model': '', 'index_built_at': None,
+            'total_chunks': 0, 'dims': 0,
+        })
+        entry['reference_files'].append({
+            'filename':    filename,
+            'path':        path,
+            'type':        file_type,
+            'size_bytes':  size_bytes,
+            'added_at':    datetime.now().isoformat(),
+            'chunk_count': None,  # filled in once an index is built
+        })
+        _save_rag_registry(registry)
+
+
+def remove_reference_file(project_id, filename):
+    """Unregister one reference file and delete it from disk. Returns True
+    if a file was actually removed."""
+    with _rag_registry_lock:
+        registry = load_rag_registry()
+        entry = registry.get(str(project_id))
+        if not entry:
+            return False
+        before = len(entry['reference_files'])
+        removed = [f for f in entry['reference_files'] if f['filename'] == filename]
+        entry['reference_files'] = [f for f in entry['reference_files'] if f['filename'] != filename]
+        if len(entry['reference_files']) == before:
+            return False
+        _save_rag_registry(registry)
+    for f in removed:
+        try:
+            os.remove(f['path'])
+        except OSError:
+            pass
+    # The old index no longer matches the current file set — safest to drop
+    # it outright rather than leave a stale one that silently retrieves from
+    # a file the user just removed.
+    _clear_reference_index(project_id)
+    return True
+
+
+def remove_rag_project(project_id):
+    with _rag_registry_lock:
+        registry = load_rag_registry()
+        if registry.pop(str(project_id), None) is not None:
+            _save_rag_registry(registry)
+
+
+def update_rag_index_meta(project_id, embedding_model, total_chunks, dims, per_file_chunk_counts):
+    with _rag_registry_lock:
+        registry = load_rag_registry()
+        entry = registry.get(str(project_id))
+        if not entry:
+            return
+        entry['embedding_model'] = embedding_model
+        entry['index_built_at']  = datetime.now().isoformat()
+        entry['total_chunks']    = total_chunks
+        entry['dims']            = dims
+        for f in entry['reference_files']:
+            if f['filename'] in per_file_chunk_counts:
+                f['chunk_count'] = per_file_chunk_counts[f['filename']]
+        _save_rag_registry(registry)
+
+
+def _clear_reference_index(project_id):
+    index_dir = _reference_index_dir(project_id)
+    shutil.rmtree(index_dir, ignore_errors=True)
+    _reference_index_cache.pop(project_id, None)
+    with _rag_registry_lock:
+        registry = load_rag_registry()
+        entry = registry.get(str(project_id))
+        if entry:
+            entry['index_built_at'] = None
+            entry['total_chunks'] = 0
+            entry['dims'] = 0
+            for f in entry['reference_files']:
+                f['chunk_count'] = None
+            _save_rag_registry(registry)
+
+
+# ─── Chunking (structured CSV / unstructured text / PDF) ───────────────────
+
 def chunk_structured_csv(path):
     """One chunk per row, rendered as the same key:value text used to build
     the tagging prompt's context section — keeps a retrieved match readable
     rather than a wall of CSV. Original fields are kept alongside for a
-    cleaner re-display if ever needed."""
+    cleaner re-display if ever needed. `source` is prefixed with the
+    filename so a match stays traceable once multiple files are combined
+    into one index."""
+    label = os.path.basename(path)
     df = read_csv_safe(path)
     chunks = []
     for i, row in df.iterrows():
         fields = {c: ('' if pd.isna(row[c]) else row[c]) for c in df.columns}
         text = "\n".join(f"{k}: {v}" for k, v in fields.items())
-        chunks.append({'text': text, 'source': f'row {i}', 'fields': fields})
+        chunks.append({'text': text, 'source': f'{label} — row {i}', 'file': label, 'fields': fields})
     return chunks
 
 
-def _window_chunks(text, source_label, size=REFERENCE_CHUNK_SIZE, overlap=REFERENCE_CHUNK_OVERLAP):
+def _window_chunks(text, label, size=REFERENCE_CHUNK_SIZE, overlap=REFERENCE_CHUNK_OVERLAP, page_suffix=''):
     text = re.sub(r'\s+', ' ', text).strip()
-    chunks = []
+    pieces = []
     start = 0
     while start < len(text):
         end = min(start + size, len(text))
         piece = text[start:end].strip()
         if piece:
-            chunks.append({'text': piece, 'source': source_label, 'fields': {}})
+            pieces.append(piece)
         if end == len(text):
             break
         start = end - overlap
+
+    base = f'{label}{page_suffix}'
+    chunks = []
+    for idx, piece in enumerate(pieces):
+        source = base if len(pieces) == 1 else f'{base} — chunk {idx + 1}/{len(pieces)}'
+        chunks.append({'text': piece, 'source': source, 'file': label, 'fields': {}})
     return chunks
 
 
@@ -1507,17 +1641,20 @@ def chunk_unstructured_text(path):
 
 def extract_pdf_chunks(path):
     from pypdf import PdfReader
+    label = os.path.basename(path)
     reader = PdfReader(path)
     chunks = []
     for page_num, page in enumerate(reader.pages, start=1):
         text = page.extract_text() or ''
-        chunks.extend(_window_chunks(text, f'{os.path.basename(path)} p.{page_num}'))
+        chunks.extend(_window_chunks(text, label, page_suffix=f' p.{page_num}'))
     return chunks
 
 
 def build_reference_chunks(reference_path):
     """Structured CSV -> one chunk per row; PDF -> per-page windowed text;
-    anything else (txt/md) -> windowed text over the whole file."""
+    anything else (txt/md) -> windowed text over the whole file. Every
+    chunk carries a `file` key (the originating filename) so multi-file
+    indexes can report per-file chunk counts and traceable sources."""
     ext = os.path.splitext(reference_path)[1].lower()
     if ext == '.csv':
         return chunk_structured_csv(reference_path)
@@ -1526,37 +1663,67 @@ def build_reference_chunks(reference_path):
     return chunk_unstructured_text(reference_path)
 
 
+def estimate_reference_chunk_count(project_id):
+    """Cheap preview (pure text/CSV parsing, no network calls) of how many
+    chunks Build Index will produce across every attached reference file —
+    shown before the user commits to the (potentially slow) embedding job."""
+    total = 0
+    per_file = {}
+    for f in list_reference_files(project_id):
+        if not os.path.exists(f['path']):
+            per_file[f['filename']] = None
+            continue
+        try:
+            n = len(build_reference_chunks(f['path']))
+        except Exception:
+            n = None
+        per_file[f['filename']] = n
+        total += n or 0
+    return total, per_file
+
+
 REFERENCE_EMBED_BATCH = 16
 
 
 def build_reference_index(project_id):
-    """One-time (per project, per embedding model) job: chunk the attached
-    reference file, embed every chunk, and write vectors.npy + meta.jsonl +
-    manifest.json under the project's reference_index/ folder. Progress is
-    tracked the same way bulk image retries are — a module-level dict polled
-    over HTTP — since this can take a while for a large reference file."""
-    proj = get_project(project_id)
-    if not proj or not proj.get('reference_path'):
-        raise ValueError('This project has no reference dataset attached.')
-    reference_path = proj['reference_path']
-    if not os.path.exists(reference_path):
-        raise ValueError('Reference file is missing on disk.')
+    """One-time (per project, per embedding model, per file set) job: chunk
+    every reference file attached to the project, embed every chunk, and
+    write vectors.npy + meta.jsonl + manifest.json under the project's
+    reference_index/ folder — one combined index across all files. Progress
+    (including a start_time for ETA) is tracked the same way bulk image
+    retries are — a module-level dict polled over HTTP — since this can
+    take a while for a large reference file."""
+    files = list_reference_files(project_id)
+    if not files:
+        raise ValueError('This project has no reference files attached.')
+    missing = [f['filename'] for f in files if not os.path.exists(f['path'])]
+    if missing:
+        raise ValueError(f"Reference file(s) missing on disk: {', '.join(missing)}")
 
     conn = get_active_connection()
     embedding_model = (conn.get('embedding_model') or '').strip()
     if not embedding_model:
         raise ValueError('Set an embedding model in the Connection Editor first.')
 
-    chunks = build_reference_chunks(reference_path)
-    total  = len(chunks)
+    chunks = []
+    per_file_counts = {}
+    for f in files:
+        file_chunks = build_reference_chunks(f['path'])
+        per_file_counts[f['filename']] = len(file_chunks)
+        chunks.extend(file_chunks)
+    total = len(chunks)
+
     with _reference_index_lock:
-        REFERENCE_INDEX_STATUS[project_id] = {'status': 'running', 'done': 0, 'total': total, 'message': ''}
+        REFERENCE_INDEX_STATUS[project_id] = {
+            'status': 'running', 'done': 0, 'total': total, 'message': '',
+            'start_time': time.time(),
+        }
 
     if total == 0:
         with _reference_index_lock:
             REFERENCE_INDEX_STATUS[project_id]['status'] = 'error'
-            REFERENCE_INDEX_STATUS[project_id]['message'] = 'No text could be extracted from the reference file.'
-        raise ValueError('No text could be extracted from the reference file.')
+            REFERENCE_INDEX_STATUS[project_id]['message'] = 'No text could be extracted from the reference file(s).'
+        raise ValueError('No text could be extracted from the reference file(s).')
 
     vectors = []
     try:
@@ -1577,16 +1744,19 @@ def build_reference_index(project_id):
     np.save(os.path.join(index_dir, 'vectors.npy'), arr)
     with open(os.path.join(index_dir, 'meta.jsonl'), 'w') as f:
         for i, c in enumerate(chunks):
-            f.write(json.dumps({'chunk_id': i, 'text': c['text'], 'source': c['source']}) + '\n')
+            f.write(json.dumps({'chunk_id': i, 'text': c['text'], 'source': c['source'], 'file': c['file']}) + '\n')
+    dims = int(arr.shape[1]) if arr.size else 0
     manifest = {
         'embedding_model': embedding_model,
-        'dims':            int(arr.shape[1]) if arr.size else 0,
+        'dims':            dims,
         'chunk_count':     total,
-        'reference_path':  reference_path,
+        'files':           [{'filename': f['filename'], 'chunk_count': per_file_counts[f['filename']]} for f in files],
         'built_at':        datetime.now().isoformat(),
     }
     with open(os.path.join(index_dir, 'manifest.json'), 'w') as f:
         json.dump(manifest, f)
+
+    update_rag_index_meta(project_id, embedding_model, total, dims, per_file_counts)
 
     _reference_index_cache.pop(project_id, None)
     with _reference_index_lock:
@@ -1604,12 +1774,11 @@ def get_reference_manifest(project_id):
 
 
 def reference_index_is_stale(project_id):
-    """True when the project has a reference file but no index yet, or the
-    active connection's embedding model has changed since the index was
-    built (the old vectors are no longer comparable to a freshly embedded
-    query)."""
-    proj = get_project(project_id)
-    if not proj or not proj.get('reference_path'):
+    """True when the project has reference file(s) attached but no index
+    yet, or the active connection's embedding model has changed since the
+    index was built (the old vectors are no longer comparable to a
+    freshly embedded query)."""
+    if not list_reference_files(project_id):
         return False
     manifest = get_reference_manifest(project_id)
     if not manifest:
@@ -1672,7 +1841,8 @@ def retrieve_reference_chunks(project_id, query_text, top_k=3):
     sims = (vectors @ query_vec) / (np.linalg.norm(vectors, axis=1) * query_norm + 1e-8)
     k = max(1, min(top_k, len(sims)))
     top_idx = np.argsort(-sims)[:k]
-    return [{'text': meta[i]['text'], 'source': meta[i]['source'], 'score': float(sims[i])} for i in top_idx]
+    return [{'text': meta[i]['text'], 'source': meta[i]['source'], 'file': meta[i].get('file', ''),
+             'score': float(sims[i])} for i in top_idx]
 
 
 # ─── Condition evaluation ─────────────────────────────────────────────────────

@@ -1,17 +1,19 @@
 """
-Tests for retrieval-augmented (grounded) text tagging.
+Tests for retrieval-augmented (grounded) text tagging, including multi-file
+reference datasets and the rag_projects.json registry.
 
 Three tiers, gated by environment variables so a plain `manage.py test`
 stays fast and fully offline:
 
   python manage.py test tagger_app.test_retrieval
-      Chunking, config parsing, and staleness-detection logic only.
-      No network, runs in well under a second.
+      Chunking, registry CRUD, config parsing, and staleness-detection
+      logic only. No network, runs in well under a second.
 
   RAG_LIVE_TESTS=1 python manage.py test tagger_app.test_retrieval -v 2
-      The above, plus small real-Ollama checks (~1-2 min): build a tiny
-      index, verify retrieval quality/shape, verify edge cases (no
-      embedding model configured, empty reference file, empty query).
+      The above, plus small real-Ollama checks (~1 min): build a tiny
+      index (including a genuine multi-file index), verify retrieval
+      quality/shape, verify edge cases (no embedding model configured,
+      empty reference file, empty query).
 
   RAG_STRESS_FULL=1 python manage.py test tagger_app.test_retrieval -v 2
       The above, plus the real stress test: embeds the FULL real
@@ -135,9 +137,10 @@ def make_minimal_pdf(pages_text):
 
 
 class _IsolatedRegistryMixin:
-    """Points utils' PROJECTS_CSV/CONNECTIONS_CSV and Django's MEDIA_ROOT at
-    a throwaway temp directory for the test's duration, so live tests never
-    touch the real app's projects.csv/connections.csv/media on this machine."""
+    """Points utils' PROJECTS_CSV/CONNECTIONS_CSV/STATS_CSV/RAG_PROJECTS_JSON
+    and Django's MEDIA_ROOT at a throwaway temp directory for the test's
+    duration, so live tests never touch the real app's projects.csv/
+    connections.csv/rag_projects.json/media on this machine."""
 
     def setUp(self):
         super().setUp()
@@ -146,6 +149,7 @@ class _IsolatedRegistryMixin:
             mock.patch.object(utils, 'PROJECTS_CSV', os.path.join(self.tmp_dir, 'projects.csv')),
             mock.patch.object(utils, 'CONNECTIONS_CSV', os.path.join(self.tmp_dir, 'connections.csv')),
             mock.patch.object(utils, 'STATS_CSV', os.path.join(self.tmp_dir, 'stats.csv')),
+            mock.patch.object(utils, 'RAG_PROJECTS_JSON', os.path.join(self.tmp_dir, 'rag_projects.json')),
         ]
         for p in self._patches:
             p.start()
@@ -162,17 +166,23 @@ class _IsolatedRegistryMixin:
         utils._reference_index_cache.clear()
         super().tearDown()
 
-    def make_project(self, csv_path, reference_path=''):
+    def make_project(self, csv_path, reference_paths=None):
+        """reference_paths: list of source file paths to attach (any
+        number — 0, 1, or many), each copied into the project and
+        registered via add_reference_file, mirroring what upload_file_view
+        / add_reference_files_view do."""
         project_id = 'test-' + os.urandom(4).hex()
         project_dir = os.path.join(settings.MEDIA_ROOT, project_id)
         os.makedirs(project_dir, exist_ok=True)
         local_csv = os.path.join(project_dir, os.path.basename(csv_path))
         shutil.copy(csv_path, local_csv)
-        local_ref = ''
-        if reference_path:
-            local_ref = os.path.join(project_dir, os.path.basename(reference_path))
-            shutil.copy(reference_path, local_ref)
-        utils.save_project(project_id, 'test project', local_csv, reference_path=local_ref)
+        utils.save_project(project_id, 'test project', local_csv)
+        for ref_path in (reference_paths or []):
+            filename = os.path.basename(ref_path)
+            local_ref = os.path.join(project_dir, filename)
+            shutil.copy(ref_path, local_ref)
+            file_type = os.path.splitext(local_ref)[1].lower().lstrip('.')
+            utils.add_reference_file(project_id, filename, local_ref, file_type, os.path.getsize(local_ref))
         return project_id
 
 
@@ -190,7 +200,8 @@ class ChunkingTests(TestCase):
         pd.DataFrame({'Food': ['Apple', 'Banana', 'Bread'], 'Sodium': [1, 0, 490]}).to_csv(path, index=False)
         chunks = utils.chunk_structured_csv(path)
         self.assertEqual(len(chunks), 3)
-        self.assertEqual(chunks[0]['source'], 'row 0')
+        self.assertEqual(chunks[0]['source'], 'ref.csv — row 0')
+        self.assertEqual(chunks[0]['file'], 'ref.csv')
         self.assertIn('Food: Apple', chunks[0]['text'])
         self.assertIn('Sodium: 1', chunks[0]['text'])
         self.assertEqual(chunks[0]['fields']['Food'], 'Apple')
@@ -211,9 +222,13 @@ class ChunkingTests(TestCase):
             f.write(text)
         chunks = utils.chunk_unstructured_text(path)
         self.assertGreater(len(chunks), 1)
-        for c in chunks:
+        for idx, c in enumerate(chunks):
             self.assertLessEqual(len(c['text']), utils.REFERENCE_CHUNK_SIZE)
-            self.assertEqual(c['source'], 'doc.txt')
+            self.assertEqual(c['file'], 'doc.txt')
+            # Multiple windows from one file are disambiguated by index —
+            # otherwise every chunk from doc.txt would look identical in
+            # the _sources audit column.
+            self.assertEqual(c['source'], f'doc.txt — chunk {idx + 1}/{len(chunks)}')
         # Overlap: consecutive chunks should share a trailing/leading span.
         first_tail = chunks[0]['text'][-utils.REFERENCE_CHUNK_OVERLAP:]
         second_head = chunks[1]['text'][:utils.REFERENCE_CHUNK_OVERLAP]
@@ -226,6 +241,8 @@ class ChunkingTests(TestCase):
         chunks = utils.chunk_unstructured_text(path)
         self.assertEqual(len(chunks), 1)
         self.assertEqual(chunks[0]['text'], 'A short reference note.')
+        # A single chunk stays as the bare filename — no "chunk 1/1" clutter.
+        self.assertEqual(chunks[0]['source'], 'short.md')
 
     def test_unstructured_empty_file_yields_no_chunks(self):
         path = os.path.join(self.tmp_dir, 'empty.txt')
@@ -244,6 +261,7 @@ class ChunkingTests(TestCase):
         self.assertTrue(any('Instant Noodles' in c['text'] for c in chunks))
         self.assertTrue(any(c['source'].endswith('p.1') for c in chunks))
         self.assertTrue(any(c['source'].endswith('p.2') for c in chunks))
+        self.assertTrue(all(c['file'] == 'ref.pdf' for c in chunks))
 
     def test_build_reference_chunks_dispatches_by_extension(self):
         csv_path = os.path.join(self.tmp_dir, 'a.csv')
@@ -258,6 +276,123 @@ class ChunkingTests(TestCase):
         self.assertEqual(len(utils.build_reference_chunks(csv_path)), 1)
         self.assertEqual(len(utils.build_reference_chunks(txt_path)), 1)
         self.assertEqual(len(utils.build_reference_chunks(pdf_path)), 1)
+
+    def test_multi_file_chunks_are_labeled_by_their_own_origin(self):
+        """No index/network involved — just confirms two different
+        reference files chunked independently (as build_reference_index
+        does per file before combining) stay distinguishable by `file` and
+        `source`, which is what keeps a multi-file _sources column
+        meaningful."""
+        csv_path = os.path.join(self.tmp_dir, 'nutrition.csv')
+        pd.DataFrame({'Food': ['Apple']}).to_csv(csv_path, index=False)
+        txt_path = os.path.join(self.tmp_dir, 'notes.txt')
+        with open(txt_path, 'w') as f:
+            f.write('A short reference note.')
+
+        csv_chunks = utils.build_reference_chunks(csv_path)
+        txt_chunks = utils.build_reference_chunks(txt_path)
+        combined = csv_chunks + txt_chunks
+
+        files_seen = {c['file'] for c in combined}
+        self.assertEqual(files_seen, {'nutrition.csv', 'notes.txt'})
+        sources_seen = {c['source'] for c in combined}
+        self.assertEqual(sources_seen, {'nutrition.csv — row 0', 'notes.txt'})
+
+
+class RagRegistryTests(_IsolatedRegistryMixin, TestCase):
+    """rag_projects.json CRUD — no network."""
+
+    def _project_with_csv(self):
+        csv_path = os.path.join(settings.MEDIA_ROOT, 'main.csv')
+        pd.DataFrame({'X': [1]}).to_csv(csv_path, index=False)
+        return self.make_project(csv_path)  # no reference files yet
+
+    def _register_dummy_file(self, project_id, filename):
+        path = os.path.join(settings.MEDIA_ROOT, filename)
+        with open(path, 'w') as f:
+            f.write('dummy')
+        utils.add_reference_file(project_id, filename, path, os.path.splitext(filename)[1].lstrip('.'), 5)
+        return path
+
+    def test_add_reference_file_accumulates_as_many_as_added(self):
+        """The whole point of this feature: a project can have any number
+        of reference files, not just one."""
+        project_id = self._project_with_csv()
+        for name in ('a.csv', 'b.txt', 'c.pdf', 'd.md'):
+            self._register_dummy_file(project_id, name)
+
+        files = utils.list_reference_files(project_id)
+        self.assertEqual([f['filename'] for f in files], ['a.csv', 'b.txt', 'c.pdf', 'd.md'])
+        for f in files:
+            self.assertIsNone(f['chunk_count'])  # not indexed yet
+            self.assertIn('added_at', f)
+
+    def test_remove_reference_file_deletes_from_disk_and_registry(self):
+        project_id = self._project_with_csv()
+        path_a = self._register_dummy_file(project_id, 'a.csv')
+        path_b = self._register_dummy_file(project_id, 'b.csv')
+
+        self.assertTrue(utils.remove_reference_file(project_id, 'a.csv'))
+        self.assertFalse(os.path.exists(path_a))
+        self.assertTrue(os.path.exists(path_b))
+        self.assertEqual([f['filename'] for f in utils.list_reference_files(project_id)], ['b.csv'])
+
+    def test_remove_reference_file_unknown_filename_returns_false(self):
+        project_id = self._project_with_csv()
+        self._register_dummy_file(project_id, 'a.csv')
+        self.assertFalse(utils.remove_reference_file(project_id, 'nope.csv'))
+        self.assertEqual(len(utils.list_reference_files(project_id)), 1)
+
+    def test_removing_a_file_clears_an_existing_index(self):
+        project_id = self._project_with_csv()
+        self._register_dummy_file(project_id, 'a.csv')
+        self._register_dummy_file(project_id, 'b.csv')
+
+        # Fake a finished build (no network) so there's an index to clear.
+        index_dir = utils._reference_index_dir(project_id)
+        os.makedirs(index_dir, exist_ok=True)
+        with open(os.path.join(index_dir, 'manifest.json'), 'w') as f:
+            json.dump({'embedding_model': 'model-a', 'dims': 4, 'chunk_count': 2}, f)
+        utils.update_rag_index_meta(project_id, 'model-a', 2, 4, {'a.csv': 1, 'b.csv': 1})
+        self.assertEqual(utils.get_rag_project_entry(project_id)['total_chunks'], 2)
+
+        utils.remove_reference_file(project_id, 'a.csv')
+
+        self.assertFalse(os.path.exists(index_dir))
+        entry = utils.get_rag_project_entry(project_id)
+        self.assertEqual(entry['total_chunks'], 0)
+        self.assertIsNone(entry['index_built_at'])
+        self.assertIsNone(next(f for f in entry['reference_files'] if f['filename'] == 'b.csv')['chunk_count'])
+
+    def test_remove_rag_project_clears_registry_entry(self):
+        project_id = self._project_with_csv()
+        self._register_dummy_file(project_id, 'a.csv')
+        self.assertIsNotNone(utils.get_rag_project_entry(project_id))
+        utils.remove_rag_project(project_id)
+        self.assertIsNone(utils.get_rag_project_entry(project_id))
+
+    def test_delete_project_also_cleans_up_rag_registry(self):
+        """utils.delete_project deletes the whole project folder AND its
+        rag_projects.json entry — a deleted project shouldn't linger in
+        the RAG registry."""
+        project_id = self._project_with_csv()
+        self._register_dummy_file(project_id, 'a.csv')
+        self.assertIsNotNone(utils.get_rag_project_entry(project_id))
+        utils.delete_project(project_id)
+        self.assertIsNone(utils.get_rag_project_entry(project_id))
+
+    def test_estimate_reference_chunk_count_previews_before_building(self):
+        project_id = self._project_with_csv()
+        ref_a = os.path.join(settings.MEDIA_ROOT, 'a.csv')
+        pd.DataFrame({'Food': ['x'] * 5}).to_csv(ref_a, index=False)
+        utils.add_reference_file(project_id, 'a.csv', ref_a, 'csv', os.path.getsize(ref_a))
+        ref_b = os.path.join(settings.MEDIA_ROOT, 'b.csv')
+        pd.DataFrame({'Food': ['x'] * 3}).to_csv(ref_b, index=False)
+        utils.add_reference_file(project_id, 'b.csv', ref_b, 'csv', os.path.getsize(ref_b))
+
+        total, per_file = utils.estimate_reference_chunk_count(project_id)
+        self.assertEqual(total, 8)
+        self.assertEqual(per_file, {'a.csv': 5, 'b.csv': 3})
 
 
 class ConfigAndStalenessTests(_IsolatedRegistryMixin, TestCase):
@@ -292,7 +427,7 @@ class ConfigAndStalenessTests(_IsolatedRegistryMixin, TestCase):
         pd.DataFrame({'X': [1]}).to_csv(csv_path, index=False)
         ref_path = os.path.join(settings.MEDIA_ROOT, 'ref.csv')
         pd.DataFrame({'Food': ['Apple']}).to_csv(ref_path, index=False)
-        project_id = self.make_project(csv_path, ref_path)
+        project_id = self.make_project(csv_path, [ref_path])
 
         # Never built at all — still reports "stale" at the utils level (the
         # view layer is what distinguishes this from "built but outdated";
@@ -312,10 +447,10 @@ class ConfigAndStalenessTests(_IsolatedRegistryMixin, TestCase):
         utils.save_connection('localhost', '11434', 'chat-model', 'model-b')
         self.assertTrue(utils.reference_index_is_stale(project_id))
 
-    def test_project_with_no_reference_path_is_never_stale(self):
+    def test_project_with_no_reference_files_is_never_stale(self):
         csv_path = os.path.join(settings.MEDIA_ROOT, 'main.csv')
         pd.DataFrame({'X': [1]}).to_csv(csv_path, index=False)
-        project_id = self.make_project(csv_path)  # no reference_path
+        project_id = self.make_project(csv_path)  # no reference files
         self.assertFalse(utils.reference_index_is_stale(project_id))
 
 
@@ -343,7 +478,7 @@ class LiveSmallRetrievalTests(_IsolatedRegistryMixin, TestCase):
         main_csv = os.path.join(settings.MEDIA_ROOT, 'main.csv')
         pd.DataFrame({'FoodName': ['White bread']}).to_csv(main_csv, index=False)
         ref_path, ref_df = self._small_reference_csv(40)
-        project_id = self.make_project(main_csv, ref_path)
+        project_id = self.make_project(main_csv, [ref_path])
 
         start = time.time()
         manifest = utils.build_reference_index(project_id)
@@ -353,10 +488,45 @@ class LiveSmallRetrievalTests(_IsolatedRegistryMixin, TestCase):
 
         self.assertEqual(manifest['chunk_count'], 40)
         self.assertEqual(manifest['embedding_model'], EMBED_MODEL)
+        self.assertEqual(manifest['files'], [{'filename': 'ref_small.csv', 'chunk_count': 40}])
         vectors, meta = utils.load_reference_index(project_id)
         self.assertEqual(vectors.shape[0], 40)
         self.assertEqual(vectors.shape[1], manifest['dims'])
         self.assertEqual(len(meta), 40)
+
+        # Registry reflects the build too (per-file chunk_count backfilled).
+        entry = utils.get_rag_project_entry(project_id)
+        self.assertEqual(entry['total_chunks'], 40)
+        self.assertEqual(entry['reference_files'][0]['chunk_count'], 40)
+
+    def test_multi_file_index_combines_sources_from_every_file(self):
+        """The actual new capability: attach several reference files (a CSV
+        subset AND a distinctive PDF) and confirm one combined index is
+        built across all of them, with retrieval correctly attributing
+        matches back to whichever file they came from."""
+        main_csv = os.path.join(settings.MEDIA_ROOT, 'main.csv')
+        pd.DataFrame({'FoodName': ['x']}).to_csv(main_csv, index=False)
+        ref_csv, _ = self._small_reference_csv(20)
+
+        pdf_path = os.path.join(settings.MEDIA_ROOT, 'standards.pdf')
+        with open(pdf_path, 'wb') as f:
+            f.write(make_minimal_pdf([
+                'This standards document defines Zorbex Fructozyme as the reference '
+                'compound for measuring unusual synthetic sweetener glycemic response.'
+            ]))
+
+        project_id = self.make_project(main_csv, [ref_csv, pdf_path])
+        manifest = utils.build_reference_index(project_id)
+
+        self.assertEqual(len(manifest['files']), 2)
+        filenames = {f['filename'] for f in manifest['files']}
+        self.assertEqual(filenames, {'ref_small.csv', 'standards.pdf'})
+        self.assertEqual(manifest['chunk_count'], 21)  # 20 CSV rows + 1 PDF chunk
+
+        results = utils.retrieve_reference_chunks(project_id, 'Zorbex Fructozyme reference compound', top_k=3)
+        self.assertGreater(len(results), 0)
+        self.assertEqual(results[0]['file'], 'standards.pdf')
+        self.assertIn('Zorbex Fructozyme', results[0]['text'])
 
     def test_retrieval_returns_well_formed_ranked_results(self):
         """Checks the retrieval *mechanism* — correct count, descending
@@ -371,12 +541,13 @@ class LiveSmallRetrievalTests(_IsolatedRegistryMixin, TestCase):
         Ferrero, Italy ..." rows instead of its own row. That's a real
         embedding-quality characteristic worth knowing (a dedicated
         embedding model like nomic-embed-text would very likely do better
-        here), not a bug in the retrieval code itself, which this test
-        confirms is wired correctly."""
+        here — see the module docstring for a measured comparison), not a
+        bug in the retrieval code itself, which this test confirms is
+        wired correctly."""
         main_csv = os.path.join(settings.MEDIA_ROOT, 'main.csv')
         pd.DataFrame({'FoodName': ['x']}).to_csv(main_csv, index=False)
         ref_path, ref_df = self._small_reference_csv(40)
-        project_id = self.make_project(main_csv, ref_path)
+        project_id = self.make_project(main_csv, [ref_path])
         utils.build_reference_index(project_id)
 
         known_food = ref_df.iloc[3]['Food Name']
@@ -389,10 +560,11 @@ class LiveSmallRetrievalTests(_IsolatedRegistryMixin, TestCase):
                             'Scores should discriminate between chunks, not come back flat/identical')
         for r in results:
             self.assertIsInstance(r['score'], float)
-            self.assertTrue(r['source'].startswith('row '))
+            self.assertTrue(r['source'].startswith('ref_small.csv — row '))
+            self.assertEqual(r['file'], 'ref_small.csv')
         found_exact = any(known_food in r['text'] for r in results)
         print(f'\n[LiveSmall] query {known_food!r}: exact row in top-5 = {found_exact} '
-              f'(top score {scores[0]:.3f}); see docstring — model-dependent, not asserted')
+              f'(top score {scores[0]:.3f}); see module docstring — model-dependent, not asserted')
 
     def test_build_index_with_chat_only_model_reports_clean_error(self):
         """Real robustness check found via manual probing during stress
@@ -406,7 +578,7 @@ class LiveSmallRetrievalTests(_IsolatedRegistryMixin, TestCase):
         main_csv = os.path.join(settings.MEDIA_ROOT, 'main.csv')
         pd.DataFrame({'FoodName': ['x']}).to_csv(main_csv, index=False)
         ref_path, _ = self._small_reference_csv(3)
-        project_id = self.make_project(main_csv, ref_path)
+        project_id = self.make_project(main_csv, [ref_path])
         utils.save_connection(OLLAMA_HOST, OLLAMA_PORT, CHAT_MODEL, 'gpt-oss:20b')
 
         with self.assertRaises(Exception):
@@ -419,7 +591,7 @@ class LiveSmallRetrievalTests(_IsolatedRegistryMixin, TestCase):
         main_csv = os.path.join(settings.MEDIA_ROOT, 'main.csv')
         pd.DataFrame({'FoodName': ['x']}).to_csv(main_csv, index=False)
         ref_path, ref_df = self._small_reference_csv(5)
-        project_id = self.make_project(main_csv, ref_path)
+        project_id = self.make_project(main_csv, [ref_path])
         utils.build_reference_index(project_id)
 
         results = utils.retrieve_reference_chunks(project_id, 'any food', top_k=1000)
@@ -429,7 +601,7 @@ class LiveSmallRetrievalTests(_IsolatedRegistryMixin, TestCase):
         main_csv = os.path.join(settings.MEDIA_ROOT, 'main.csv')
         pd.DataFrame({'FoodName': ['x']}).to_csv(main_csv, index=False)
         ref_path, _ = self._small_reference_csv(5)
-        project_id = self.make_project(main_csv, ref_path)
+        project_id = self.make_project(main_csv, [ref_path])
         utils.save_connection(OLLAMA_HOST, OLLAMA_PORT, CHAT_MODEL, '')  # clear embedding model
 
         with self.assertRaisesMessage(ValueError, 'embedding model'):
@@ -440,9 +612,17 @@ class LiveSmallRetrievalTests(_IsolatedRegistryMixin, TestCase):
         pd.DataFrame({'FoodName': ['x']}).to_csv(main_csv, index=False)
         empty_ref = os.path.join(settings.MEDIA_ROOT, 'empty.txt')
         open(empty_ref, 'w').close()
-        project_id = self.make_project(main_csv, empty_ref)
+        project_id = self.make_project(main_csv, [empty_ref])
 
         with self.assertRaisesMessage(ValueError, 'No text could be extracted'):
+            utils.build_reference_index(project_id)
+
+    def test_build_index_with_no_files_attached_raises_clear_error(self):
+        main_csv = os.path.join(settings.MEDIA_ROOT, 'main.csv')
+        pd.DataFrame({'FoodName': ['x']}).to_csv(main_csv, index=False)
+        project_id = self.make_project(main_csv)  # no reference files at all
+
+        with self.assertRaisesMessage(ValueError, 'no reference files'):
             utils.build_reference_index(project_id)
 
     def test_retrieval_before_any_index_built_returns_empty(self):
@@ -455,7 +635,7 @@ class LiveSmallRetrievalTests(_IsolatedRegistryMixin, TestCase):
         main_csv = os.path.join(settings.MEDIA_ROOT, 'main.csv')
         pd.DataFrame({'FoodName': ['x']}).to_csv(main_csv, index=False)
         ref_path, _ = self._small_reference_csv(5)
-        project_id = self.make_project(main_csv, ref_path)
+        project_id = self.make_project(main_csv, [ref_path])
         utils.build_reference_index(project_id)
         self.assertEqual(utils.retrieve_reference_chunks(project_id, '   ', top_k=3), [])
 
@@ -486,7 +666,7 @@ class StressFullDatasetTests(_IsolatedRegistryMixin, TestCase):
         print(f'[Stress] main dataset: {len(sub_df)} subcategories to assess, grounded against {n_rows} reference rows')
 
         # ── Build the index over the FULL real reference dataset ──
-        project_id = self.make_project(main_csv_path, GLYCEMIC_CSV)
+        project_id = self.make_project(main_csv_path, [GLYCEMIC_CSV])
         start = time.time()
         manifest = utils.build_reference_index(project_id)
         build_elapsed = time.time() - start
@@ -520,17 +700,20 @@ class StressFullDatasetTests(_IsolatedRegistryMixin, TestCase):
             })
         self.assertEqual(r.status_code, 302)
 
-        # Point this session's project at the already-built index by
-        # attaching the same reference file and re-using the existing
-        # index (rebuilding the full corpus a second time just to drive
-        # this through HTTP would double the stress-test runtime for no
-        # extra coverage — the index-build path is already verified above).
+        # Attach the same reference file to this session's project and
+        # reuse the already-built index/registry state directly — actually
+        # re-uploading + re-embedding the full 4274-row corpus a second
+        # time just to drive it through HTTP would double the stress-test
+        # runtime for no extra coverage (the index-build path above already
+        # verifies real embedding end to end).
         session = self.client.session
         http_project_id = session['project_id']
-        proj_csv_path = os.path.join(settings.MEDIA_ROOT, http_project_id, os.path.basename(main_csv_path))
-        utils.update_project(http_project_id, reference_path=GLYCEMIC_CSV)
+        utils.add_reference_file(http_project_id, os.path.basename(GLYCEMIC_CSV), GLYCEMIC_CSV,
+                                  'csv', os.path.getsize(GLYCEMIC_CSV))
         index_dir = utils._reference_index_dir(http_project_id)
         shutil.copytree(utils._reference_index_dir(project_id), index_dir)
+        utils.update_rag_index_meta(http_project_id, EMBED_MODEL, manifest['chunk_count'], manifest['dims'],
+                                     {os.path.basename(GLYCEMIC_CSV): manifest['chunk_count']})
 
         retrieval_cfg = json.dumps({'enabled': True, 'top_k': 5})
         r = self.client.post('/ODT/define-columns/', data={
