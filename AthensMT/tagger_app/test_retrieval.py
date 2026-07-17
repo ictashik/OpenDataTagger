@@ -501,6 +501,27 @@ class BuildIndexRobustnessTests(_IsolatedRegistryMixin, TestCase):
         utils.build_reference_index(project_id)
         self.assertIn(project_id, utils.REFERENCE_INDEX_STATUS)
 
+    def test_unreachable_ollama_host_fails_with_clear_message(self):
+        """Real user-reported case: Ollama not running (or the wrong host/
+        port configured) surfaced as the raw, non-actionable
+        '<urlopen error [Errno 61] Connection refused>'. embed_texts
+        should name the host/port actually being tried instead."""
+        main_csv = os.path.join(settings.MEDIA_ROOT, 'main.csv')
+        pd.DataFrame({'FoodName': ['x']}).to_csv(main_csv, index=False)
+        ref_path = os.path.join(settings.MEDIA_ROOT, 'ref.csv')
+        pd.DataFrame({'Food': ['Apple']}).to_csv(ref_path, index=False)
+        project_id = self.make_project(main_csv, [ref_path])
+        # Port 1 is privileged/reserved — nothing will ever be listening there.
+        utils.save_connection('localhost', '1', 'chat-model', 'embed-model')
+
+        result = utils.build_reference_index(project_id)  # must not raise
+
+        self.assertIsNone(result)
+        status = utils.REFERENCE_INDEX_STATUS[project_id]
+        self.assertEqual(status['status'], 'error')
+        self.assertIn('Could not reach Ollama', status['message'])
+        self.assertIn('localhost:1', status['message'])
+
 
 # ─── Tier 2: small real-Ollama checks + edge cases ──────────────────────────
 

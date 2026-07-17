@@ -198,6 +198,14 @@ def embed_texts(texts, embedding_model, conn=None, timeout=60):
         except Exception:
             detail = str(e)
         raise RuntimeError(f"Embedding request failed: {detail}") from e
+    except urllib.error.URLError as e:
+        # Ollama not running, wrong host/port, firewall, etc. — the raw
+        # "<urlopen error [Errno 61] Connection refused>" isn't actionable
+        # on its own, so name the host/port actually being tried.
+        raise RuntimeError(
+            f"Could not reach Ollama at {conn['host']}:{conn['port']} ({e.reason}). "
+            f"Check it's running and that the host/port in the Connection Editor are correct."
+        ) from e
     return result.get('embeddings', [])
 
 
