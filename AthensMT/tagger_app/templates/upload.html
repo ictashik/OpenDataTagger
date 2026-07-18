@@ -42,7 +42,11 @@
             <div>
                 <label class="block text-sm font-medium text-gray-700 dark:text-gray-300">Upload Config File (Optional)</label>
                 <input type="file" name="config_file" class="mt-1 block w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg shadow-sm focus:ring-indigo-500 focus:border-indigo-500 dark:bg-gray-900 dark:text-gray-200" accept=".csv">
-                <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Upload a pre-configured file for automated tagging settings.</p>
+                <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                    Upload a pre-configured file for automated tagging settings. Not sure how to write one?
+                    <a href="{% url 'download_config_guide' %}" class="underline text-indigo-500 hover:text-indigo-700 dark:hover:text-indigo-300">Download the AI Config Guide (.md)</a>
+                    and hand it to a large LLM along with a few sample rows of your data — it'll design the config for you.
+                </p>
             </div>
 
             <!-- Optional Reference Dataset(s) (text mode: retrieval-augmented tagging) -->

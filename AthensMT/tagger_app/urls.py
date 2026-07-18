@@ -16,6 +16,7 @@ urlpatterns = [
     path(f'{BASE_URL}/tagging/llm-status/',        views.tagging_llm_status_view, name='tagging_llm_status'),
     path(f'{BASE_URL}/tagging/stop/',              views.stop_tagging_view,       name='stop_tagging'),
     path(f'{BASE_URL}/llm_status/',                views.llm_status_view,         name='llm_status'),
+    path(f'{BASE_URL}/config-guide/',              views.download_config_guide_view, name='download_config_guide'),
     path(f'{BASE_URL}/results/',                   views.results_view,            name='results'),
     path(f'{BASE_URL}/connection/',                views.connection_editor_view,  name='connection_editor'),
     path(f'{BASE_URL}/connection/test/',           views.test_connection_view,    name='test_connection'),

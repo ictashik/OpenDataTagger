@@ -22,6 +22,7 @@ from .utils import (
     row_by_row_tagger,
     load_config_file,
     save_config_file,
+    load_config_guide_markdown,
     LLM_CACHE_KEYS,
     IMAGE_CACHE_KEYS,
     get_active_connection,
@@ -1131,6 +1132,16 @@ def gallery_retry_status_view(request):
     if not job_key or job_key not in BULK_RETRY_STATUS:
         return JsonResponse({'success': False, 'error': 'No such job.'}, status=400)
     return JsonResponse({'success': True, **BULK_RETRY_STATUS[job_key]})
+
+
+def download_config_guide_view(request):
+    """Static Markdown doc explaining ODT and the config-file schema —
+    meant to be handed to a large LLM alongside a few sample data rows so
+    it can design a tag config for the user's actual dataset."""
+    markdown = load_config_guide_markdown()
+    response = HttpResponse(markdown, content_type='text/markdown; charset=utf-8')
+    response['Content-Disposition'] = 'attachment; filename="ODT_Config_Guide.md"'
+    return response
 
 
 def gallery_zip_view(request):

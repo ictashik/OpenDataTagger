@@ -64,6 +64,16 @@ _DEFAULT_IMAGE_CONNECTION = {
 SD_TIMEOUT = 600
 
 STYLE_PRESETS_PATH = os.path.join(_base, 'style_presets.json')
+CONFIG_GUIDE_PATH = os.path.join(_base, 'odt_config_guide.md')
+
+
+def load_config_guide_markdown():
+    """The downloadable "AI Config Guide" — a static Markdown doc explaining
+    ODT and the config-file schema, meant to be handed to a large LLM
+    alongside a few sample data rows so it can design a tag config. Static
+    content, edited directly at CONFIG_GUIDE_PATH — no templating needed."""
+    with open(CONFIG_GUIDE_PATH, encoding='utf-8') as f:
+        return f.read()
 
 
 def read_csv_safe(path, **kwargs):
