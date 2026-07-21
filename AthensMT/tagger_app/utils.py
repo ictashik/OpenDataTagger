@@ -2244,13 +2244,63 @@ def evaluate_condition(definition, full_context):
 
 # ─── Core tagger ─────────────────────────────────────────────────────────────
 
-def row_by_row_tagger(session_key, csv_path, config_path, input_columns,
-                      output_definitions, project_id=None, mode='text'):
+def infer_resume_row(csv_path, output_definitions):
+    """How many rows of an interrupted run are actually done, read straight
+    off the _tagged.csv output rather than trusting done_rows/status in the
+    project registry — those are only updated on an explicit pause or a
+    clean finish, so a plain server kill mid-run (no pause clicked) would
+    otherwise look like nothing had been done at all. Returns 0 if there's
+    no output file yet or no output columns to check."""
+    out_cols = [d['OutputColumn'] for d in output_definitions]
+    if not out_cols:
+        return 0
+    base, _ = os.path.splitext(csv_path)
+    tagged_path = base + "_tagged.csv"
+    if not os.path.exists(tagged_path):
+        return 0
     try:
-        df = read_csv_safe(csv_path)
+        df = read_csv_safe(tagged_path)
+    except Exception:
+        return 0
+    missing_cols = [c for c in out_cols if c not in df.columns]
+    if missing_cols:
+        return 0
+    # Series.replace('nan', '') does not touch the string 'nan' produced by
+    # astype(str) on a NaN cell — checking notna() first avoids relying on
+    # that string round-trip at all.
+    filled = df[out_cols].apply(lambda col: col.notna() & (col.astype(str).str.strip() != ''))
+    complete_rows = filled.all(axis=1)
+    # First incomplete row is the resume point; if every row is already
+    # complete (or the file is empty), there's nothing left to redo.
+    incomplete = complete_rows[~complete_rows]
+    return int(incomplete.index[0]) if len(incomplete) else len(df)
+
+
+def row_by_row_tagger(session_key, csv_path, config_path, input_columns,
+                      output_definitions, project_id=None, mode='text', start_row=0):
+    try:
+        base, ext = os.path.splitext(csv_path)
+        tagged_path = base + "_tagged.csv"
+
+        # start_row > 0 means we're continuing a run that was left paused
+        # across a process restart — PROGRESS_STATUS/PAUSE_FLAGS are
+        # in-memory only and don't survive that, but done_rows in the
+        # project registry does (see tagging_view). tagged_path already has
+        # real, previously-generated answers for every row before start_row,
+        # so read from there instead of the original csv_path — reading
+        # csv_path here would re-tag the whole file from row 0.
+        if start_row > 0 and os.path.exists(tagged_path):
+            df = read_csv_safe(tagged_path)
+            # Empty output cells round-tripped through CSV come back as NaN
+            # rather than the "" a fresh run would have — fill them so a
+            # same-row cross-column reference to a not-yet-generated output
+            # column doesn't literally see the string "nan".
+            df = df.fillna("")
+        else:
+            df = read_csv_safe(csv_path)
         total_rows = len(df)
         PROGRESS_STATUS[session_key] = {
-            "done":        0,
+            "done":        start_row,
             "total":       total_rows,
             "status":      "running",
             "tagged_file": "",
@@ -2267,9 +2317,6 @@ def row_by_row_tagger(session_key, csv_path, config_path, input_columns,
             "completion_tokens": 0,
             "llm_time_sec":      0.0,
         }
-
-        base, ext = os.path.splitext(csv_path)
-        tagged_path = base + "_tagged.csv"
 
         # For image mode, generated images go in a sibling folder under media/;
         # cells store the path relative to MEDIA_ROOT (not just the folder's
@@ -2333,7 +2380,7 @@ def row_by_row_tagger(session_key, csv_path, config_path, input_columns,
         if project_id:
             update_project(project_id, status='running', total_rows=total_rows, session_key=session_key)
 
-        for i in range(total_rows):
+        for i in range(start_row, total_rows):
             if CANCEL_FLAGS.get(session_key, False):
                 break
             row             = df.loc[i]

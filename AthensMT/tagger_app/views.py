@@ -20,6 +20,7 @@ from .utils import (
     PAUSE_FLAGS,
     CANCEL_FLAGS,
     row_by_row_tagger,
+    infer_resume_row,
     load_config_file,
     save_config_file,
     load_config_guide_markdown,
@@ -591,13 +592,24 @@ def tagging_view(request):
         if same_project and ps['status'] not in ('finished', 'cancelled') and not ps['status'].startswith('error'):
             return render(request, 'tagging.html', context)
 
+    # We fell through the in-memory reattach check above, so any previous
+    # run for this project is gone from PROGRESS_STATUS/PAUSE_FLAGS — either
+    # there never was one, or the process restarted while a run for this
+    # project was still going (paused or not — those dicts don't survive a
+    # restart either way). done_rows/status in the project registry aren't
+    # reliable here since they're only updated on an explicit pause or a
+    # clean finish, not on a plain kill mid-run, so infer the true resume
+    # point from what's actually been written to the tagged CSV instead of
+    # silently re-tagging the whole file from row 0.
+    start_row = infer_resume_row(csv_path, config_data) if project_id else 0
+
     session_key = str(uuid.uuid4())
     request.session['tagging_session_key'] = session_key
 
     t = threading.Thread(
         target=row_by_row_tagger,
         args=(session_key, csv_path, config_path, input_columns, config_data),
-        kwargs={'project_id': project_id, 'mode': mode},
+        kwargs={'project_id': project_id, 'mode': mode, 'start_row': start_row},
         daemon=True,
     )
     t.start()
