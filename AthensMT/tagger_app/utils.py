@@ -2245,12 +2245,13 @@ def evaluate_condition(definition, full_context):
 # Weak/small local models often don't follow the "Best Answer: X" format
 # call_llm_tagging expects, so the raw text it falls back to can carry
 # formatting noise a stronger model wouldn't ("EVEN" vs "Even" vs "<EVEN>" vs
-# "Best Answer: EVEN"). The persisted CSV value is left as-is — this only
-# normalizes the key used to group answers for the live analytics tally, so
-# a genuinely low-cardinality column (YES/NO, 0/1, A/B/C…) doesn't blow past
-# the distinct-value cap purely from noise and disappear from the panel.
+# "Best Answer: EVEN" vs "**YES**" vs markdown/asterisk emphasis). The
+# persisted CSV value is left as-is — this only normalizes the key used to
+# group answers for the live analytics tally, so a genuinely low-cardinality
+# column (YES/NO, 0/1, A/B/C…) doesn't blow past the distinct-value cap
+# purely from noise and disappear from the panel.
 _CATEGORICAL_LABEL_PREFIX_RE = re.compile(r'^(?:best\s*answer|final\s*answer|answer)\s*[:=\-]\s*', re.IGNORECASE)
-_CATEGORICAL_STRIP_CHARS = ' \t\r\n<>[]{}()"\'`.,;:!'
+_CATEGORICAL_STRIP_CHARS = ' \t\r\n<>[]{}()"\'`.,;:!*_~#'
 
 
 def _normalize_categorical_key(value):
