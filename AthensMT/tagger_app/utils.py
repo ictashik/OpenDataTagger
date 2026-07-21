@@ -2242,6 +2242,24 @@ def evaluate_condition(definition, full_context):
     return True
 
 
+# Weak/small local models often don't follow the "Best Answer: X" format
+# call_llm_tagging expects, so the raw text it falls back to can carry
+# formatting noise a stronger model wouldn't ("EVEN" vs "Even" vs "<EVEN>" vs
+# "Best Answer: EVEN"). The persisted CSV value is left as-is — this only
+# normalizes the key used to group answers for the live analytics tally, so
+# a genuinely low-cardinality column (YES/NO, 0/1, A/B/C…) doesn't blow past
+# the distinct-value cap purely from noise and disappear from the panel.
+_CATEGORICAL_LABEL_PREFIX_RE = re.compile(r'^(?:best\s*answer|final\s*answer|answer)\s*[:=\-]\s*', re.IGNORECASE)
+_CATEGORICAL_STRIP_CHARS = ' \t\r\n<>[]{}()"\'`.,;:!'
+
+
+def _normalize_categorical_key(value):
+    key = str(value).strip()
+    key = _CATEGORICAL_LABEL_PREFIX_RE.sub('', key).strip()
+    key = key.strip(_CATEGORICAL_STRIP_CHARS)
+    return key.upper()
+
+
 # ─── Core tagger ─────────────────────────────────────────────────────────────
 
 def row_by_row_tagger(session_key, csv_path, config_path, input_columns,
@@ -2438,8 +2456,9 @@ def row_by_row_tagger(session_key, csv_path, config_path, input_columns,
                 # meaningful for low-cardinality outputs, so columns that
                 # blow past a handful of distinct values (free text) just
                 # keep growing an entry that the progress endpoint later
-                # filters out.
-                val_key = str(best_answer).strip()
+                # filters out. Grouped by normalized key so formatting noise
+                # doesn't fragment one semantic answer into several.
+                val_key = _normalize_categorical_key(best_answer)
                 if val_key:
                     col_stats = PROGRESS_STATUS[session_key]["column_stats"].setdefault(out_col, {})
                     col_stats[val_key] = col_stats.get(val_key, 0) + 1
