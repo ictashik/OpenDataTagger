@@ -726,7 +726,43 @@ def tagging_progress_view(request):
         "prompt_tokens":     progress_data.get("prompt_tokens", 0),
         "completion_tokens": progress_data.get("completion_tokens", 0),
         "llm_time_sec":      progress_data.get("llm_time_sec", 0.0),
+        "live_analytics":    _build_live_analytics(progress_data.get("column_stats", {})),
     })
+
+
+# Categorical palette for the live-during-tagging analytics chart (dataviz
+# skill's dark categorical order) — YES/NO/N-A still get the fixed status
+# colors below for continuity with the post-run Analytics tab; any other
+# low-cardinality label (0/1, A/B/C, …) is assigned the next unused slot in
+# the order it's first seen.
+_LIVE_ANALYTICS_PALETTE = ['#3987e5', '#008300', '#d55181', '#c98500', '#199e70', '#d95926', '#9085e9', '#e66767']
+
+
+def _build_live_analytics(column_stats):
+    """Cumulative categorical breakdown per output column, computed while a
+    tagging run is still in progress. Only columns with fewer than 5 distinct
+    answers so far are included — free-text columns blow past that within the
+    first few rows and drop out on their own."""
+    analytics = []
+    for col, counts in column_stats.items():
+        if not counts or len(counts) >= 5:
+            continue
+        total = sum(counts.values())
+        segments = []
+        palette_idx = 0
+        for label, count in counts.items():
+            color = _ANALYTICS_COLORS.get(label.upper())
+            if not color:
+                color = _LIVE_ANALYTICS_PALETTE[palette_idx % len(_LIVE_ANALYTICS_PALETTE)]
+                palette_idx += 1
+            segments.append({
+                'label': label,
+                'count': count,
+                'pct':   round(count / total * 100, 1),
+                'color': color,
+            })
+        analytics.append({'column': col, 'total': total, 'segments': segments})
+    return analytics
 
 
 def pause_tagging_view(request):

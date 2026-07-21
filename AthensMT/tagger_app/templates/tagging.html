@@ -151,6 +151,19 @@
     </div>
     {% endif %}
 
+    {% if mode != 'image' %}
+    <!-- Live analytics: categorical breakdown of low-cardinality output
+         columns (YES/NO, 0/1, A/B/C…), updated as rows are tagged. Useful
+         for eyeballing data sanity mid-run without waiting for it to finish. -->
+    <div id="analytics-panel" class="w-full max-w-4xl mt-4 hidden">
+        <div class="flex items-center justify-between mb-2">
+            <h3 class="text-sm font-semibold text-gray-300 uppercase tracking-wide">Live Analytics</h3>
+            <span class="text-xs text-gray-500">Columns with &lt; 5 unique answers so far</span>
+        </div>
+        <div id="analytics-box" class="grid grid-cols-1 sm:grid-cols-2 gap-3"></div>
+    </div>
+    {% endif %}
+
     <!-- Live log terminal -->
     <div class="w-full max-w-4xl mt-4">
         <div class="flex items-center justify-between mb-2">
@@ -241,6 +254,96 @@ function typeWriter(el, text, totalMs, onDone) {
     }, tick);
 }
 
+// Prompts sent to the LLM include the full row context and task text, which
+// is mostly noise once you're just watching the log scroll — show only the
+// first line, expandable on click for when you actually need to inspect it.
+function buildPromptLine(prompt) {
+    var promptLine = document.createElement('div');
+    promptLine.className = 'text-gray-400';
+
+    var label = document.createElement('b');
+    label.textContent = 'Prompt: ';
+    promptLine.appendChild(label);
+
+    var full = String(prompt);
+    var firstLine = full.split('\n')[0];
+    var collapsedText = firstLine.length > 160 ? firstLine.slice(0, 160) + '…' : firstLine;
+    var isTruncated = full.length > collapsedText.length;
+
+    var textEl = document.createElement('span');
+    textEl.textContent = collapsedText;
+    promptLine.appendChild(textEl);
+
+    if (isTruncated) {
+        var toggle = document.createElement('span');
+        toggle.className = 'text-blue-400 cursor-pointer text-[11px] ml-1 hover:text-blue-300';
+        toggle.textContent = '[expand]';
+        var expanded = false;
+        toggle.addEventListener('click', function() {
+            expanded = !expanded;
+            textEl.textContent = expanded ? full : collapsedText;
+            textEl.classList.toggle('whitespace-pre-wrap', expanded);
+            toggle.textContent = expanded ? '[collapse]' : '[expand]';
+        });
+        promptLine.appendChild(toggle);
+    }
+
+    return promptLine;
+}
+
+function renderLiveAnalytics(analytics) {
+    var panel = document.getElementById('analytics-panel');
+    var box   = document.getElementById('analytics-box');
+    if (!panel || !box) return;
+    if (!analytics || !analytics.length) { panel.classList.add('hidden'); return; }
+    panel.classList.remove('hidden');
+    box.innerHTML = '';
+
+    analytics.forEach(function(col) {
+        var card = document.createElement('div');
+        card.className = 'bg-gray-800 border border-gray-700 rounded-lg p-3';
+
+        var head = document.createElement('div');
+        head.className = 'flex items-baseline justify-between text-xs';
+        var name = document.createElement('span');
+        name.className = 'font-semibold text-gray-200';
+        name.textContent = col.column;
+        var count = document.createElement('span');
+        count.className = 'text-gray-500';
+        count.textContent = col.total + ' tagged';
+        head.appendChild(name);
+        head.appendChild(count);
+        card.appendChild(head);
+
+        var bar = document.createElement('div');
+        bar.className = 'mt-2 h-4 rounded-md overflow-hidden bg-gray-900 flex gap-[2px]';
+        col.segments.forEach(function(seg) {
+            var segEl = document.createElement('div');
+            segEl.style.width = seg.pct + '%';
+            segEl.style.backgroundColor = seg.color;
+            segEl.title = seg.label + ': ' + seg.count + ' (' + seg.pct + '%)';
+            bar.appendChild(segEl);
+        });
+        card.appendChild(bar);
+
+        var legend = document.createElement('div');
+        legend.className = 'mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-gray-400';
+        col.segments.forEach(function(seg) {
+            var item = document.createElement('span');
+            item.className = 'flex items-center gap-1';
+            var dot = document.createElement('span');
+            dot.className = 'inline-block w-2 h-2 rounded-full';
+            dot.style.backgroundColor = seg.color;
+            item.appendChild(dot);
+            item.appendChild(document.createTextNode(seg.label + ' · ' + seg.count + ' (' + seg.pct + '%)'));
+            legend.appendChild(item);
+        });
+        card.appendChild(legend);
+
+        box.appendChild(card);
+    });
+}
+
 function appendLogs(logs) {
     var box       = document.getElementById('log-box');
     var empty     = document.getElementById('log-empty');
@@ -252,13 +355,15 @@ function appendLogs(logs) {
         entry.className = 'border-b border-gray-800 pb-2';
 
         var header = document.createElement('div');
-        header.innerHTML = '<span class="text-yellow-400 font-bold">[Row ' + log.row_index + '] ' + escHtml(log.column) + '</span>';
+        var headerSpan = document.createElement('span');
+        headerSpan.className = 'text-yellow-400 font-bold';
+        var rowKey = log.row_key ? String(log.row_key).trim() : '';
+        if (rowKey.length > 60) rowKey = rowKey.slice(0, 60) + '…';
+        headerSpan.textContent = '[Row ' + log.row_index + (rowKey ? ': ' + rowKey : '') + '] ' + log.column;
+        header.appendChild(headerSpan);
         entry.appendChild(header);
 
-        var promptLine = document.createElement('div');
-        promptLine.className = 'text-gray-400';
-        promptLine.innerHTML = '<b>Prompt:</b> ' + escHtml(log.prompt);
-        entry.appendChild(promptLine);
+        entry.appendChild(buildPromptLine(log.prompt));
 
         var hasImages = (log.image_urls && log.image_urls.length > 0) || log.image_url;
         if (isImageMode && hasImages) {
@@ -472,6 +577,8 @@ function poll() {
                 logsSeen = data.log_total;
                 document.getElementById('log-count').textContent = logsSeen + ' entries';
             }
+
+            if (!isImageMode) renderLiveAnalytics(data.live_analytics);
 
             if (data.status === 'finished') {
                 document.getElementById('progress-label').textContent = 'Done! Redirecting…';

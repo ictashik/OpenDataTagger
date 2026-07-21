@@ -2257,6 +2257,11 @@ def row_by_row_tagger(session_key, csv_path, config_path, input_columns,
             "start_time":  time.time(),
             "last_update": time.time(),
             "live_logs":   [],
+            # Cumulative {out_col: {value: count}} across the whole run (not
+            # capped like live_logs) — lets the progress endpoint report a
+            # live categorical breakdown for low-cardinality output columns
+            # (YES/NO, 0/1, A/B/C…) while a run is still in flight.
+            "column_stats": {},
             "project_id":  project_id,
             "prompt_tokens":     0,
             "completion_tokens": 0,
@@ -2307,6 +2312,10 @@ def row_by_row_tagger(session_key, csv_path, config_path, input_columns,
         df.to_csv(tagged_path, index=False)
 
         context_cols = [c for c in input_columns if c in df.columns] if input_columns else list(df.columns)
+
+        # First original data column, shown in the live log header ("[Row 3:
+        # <value>]") so a row reads by its natural key instead of just an index.
+        row_key_col = other_cols[0] if other_cols else (df.columns[0] if len(df.columns) else None)
 
         output_col_names = [d['OutputColumn'] for d in output_definitions]
         system_prompt = (
@@ -2425,8 +2434,19 @@ def row_by_row_tagger(session_key, csv_path, config_path, input_columns,
                     'explanation': explanation,
                 }
 
+                # Tallies feed the "live analytics" stacked bar — only
+                # meaningful for low-cardinality outputs, so columns that
+                # blow past a handful of distinct values (free text) just
+                # keep growing an entry that the progress endpoint later
+                # filters out.
+                val_key = str(best_answer).strip()
+                if val_key:
+                    col_stats = PROGRESS_STATUS[session_key]["column_stats"].setdefault(out_col, {})
+                    col_stats[val_key] = col_stats.get(val_key, 0) + 1
+
                 log_entry = {
                     "row_index":   i,
+                    "row_key":     str(all_row_context.get(row_key_col, '')) if row_key_col else '',
                     "column":      out_col,
                     "prompt":      rendered_prompt,
                     "best_answer": best_answer,
@@ -2435,9 +2455,9 @@ def row_by_row_tagger(session_key, csv_path, config_path, input_columns,
 
                 # live_logs carry extra image_url/image_urls for the frontend
                 # (image_urls has every candidate when num_images > 1, for the
-                # grid thumbnail strip); the CSV log above keeps its fixed
-                # 5-column schema. retrieved_sources is similarly UI-only —
-                # the CSV's audit trail is the `_sources` column above.
+                # grid thumbnail strip); log_entry above keeps its fixed base
+                # schema. retrieved_sources is similarly UI-only — the CSV's
+                # audit trail is the `_sources` column above.
                 live_entry = dict(log_entry)
                 live_entry["image_url"] = image_url
                 live_entry["image_urls"] = image_urls
