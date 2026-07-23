@@ -41,6 +41,7 @@ from .utils import (
     update_project,
     delete_project,
     get_project,
+    create_image_test_run_project,
     get_host_stats,
     read_csv_safe,
     convert_upload_to_csv,
@@ -372,6 +373,24 @@ def define_columns_view(request):
                 update_kwargs['image_naming_column'] = image_naming_col
                 update_kwargs['image_format'] = image_format
             update_project(project_id, **update_kwargs)
+
+        # "Test Run" — duplicate this project into a throwaway copy holding
+        # 5 random rows and switch into it, instead of starting the real
+        # (potentially long, potentially flaky) run against the whole file.
+        # The config just saved above is what gets copied, so the test run
+        # always reflects exactly what's on screen right now.
+        if mode == 'image' and project_id and request.POST.get('test_run') == '1':
+            base_name = (get_project(project_id) or {}).get('name') \
+                or os.path.splitext(os.path.basename(csv_path))[0]
+            test_pid, test_csv, test_cfg = create_image_test_run_project(
+                csv_path, config_path, base_name, image_naming_col, image_format,
+            )
+            request.session['csv_filepath']    = test_csv
+            request.session['config_filepath'] = test_cfg
+            request.session['project_id']      = test_pid
+            request.session['project_mode']    = 'image'
+            request.session.pop('tagging_session_key', None)
+            return redirect('tagging')
 
         return redirect('tagging')
 
