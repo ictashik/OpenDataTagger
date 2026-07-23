@@ -63,6 +63,43 @@ _DEFAULT_IMAGE_CONNECTION = {
 # Image generation can take a while (large models / many steps).
 SD_TIMEOUT = 600
 
+# Auto-retry budget for a single tag's image generation during a tagging run.
+# One extra attempt or two is cheap insurance against transient failures (a
+# dropped connection, the SD server momentarily busy, or the known
+# blank-image decode glitch below) without turning a genuinely bad config
+# (missing model, bad params) into a slow 3x-timeout failure — those don't
+# match _TRANSIENT_IMAGE_ERROR_MARKERS so they still fail on the first try.
+IMAGE_GEN_MAX_ATTEMPTS = 3
+IMAGE_GEN_RETRY_DELAY_SEC = 1.5
+
+# Substrings (matched case-insensitively) that mark an image-generation
+# failure as worth auto-retrying. 'decode/precision failure' is sd_server's
+# own wording for the blank-image safety net in models.py's _looks_blank
+# (a known MPS/float16 NaN-decode bug that produces a solid-color image
+# instead of raising) — that failure is transient by nature, so retrying
+# with a fresh seed is the right first move rather than surfacing it as a
+# row error the user has to notice and retry by hand.
+_TRANSIENT_IMAGE_ERROR_MARKERS = (
+    'decode/precision failure',
+    'timed out',
+    'timeout',
+    'connection refused',
+    'connection reset',
+    'remote end closed',
+    'bad gateway',
+    'service unavailable',
+    'temporarily unavailable',
+)
+
+
+def _is_transient_image_error(err):
+    """Whether an image-generation error is worth an automatic retry (a
+    passing glitch) rather than a permanent misconfiguration (bad model id,
+    invalid params, OOM) that would just fail the same way again."""
+    err_l = (err or '').lower()
+    return any(marker in err_l for marker in _TRANSIENT_IMAGE_ERROR_MARKERS)
+
+
 STYLE_PRESETS_PATH = os.path.join(_base, 'style_presets.json')
 CONFIG_GUIDE_PATH = os.path.join(_base, 'odt_config_guide.md')
 
@@ -1470,12 +1507,26 @@ def _generate_image_for_tag(definition, rendered_prompt, images_dir, images_rel,
     except (ValueError, TypeError):
         params = {}
 
-    images, meta, usage = call_image_generation(rendered_prompt, params)
-    record_stat(
-        usage['host'], usage['port'], usage['model'],
-        session_key, project_id,
-        usage['prompt_tokens'], usage['completion_tokens'], usage['elapsed_sec'],
-    )
+    attempt_params = params
+    for attempt in range(1, IMAGE_GEN_MAX_ATTEMPTS + 1):
+        images, meta, usage = call_image_generation(rendered_prompt, attempt_params)
+        record_stat(
+            usage['host'], usage['port'], usage['model'],
+            session_key, project_id,
+            usage['prompt_tokens'], usage['completion_tokens'], usage['elapsed_sec'],
+        )
+        if images:
+            break
+        err = meta.get('error', 'unknown error')
+        if attempt < IMAGE_GEN_MAX_ATTEMPTS and _is_transient_image_error(err):
+            print(f"Image generation attempt {attempt}/{IMAGE_GEN_MAX_ATTEMPTS} failed "
+                  f"transiently ({err}); retrying with a fresh seed...")
+            # Force a fresh seed on retry — an explicit locked seed would
+            # otherwise reproduce the exact same (possibly blank) decode.
+            attempt_params = {**params, 'seed': -1}
+            time.sleep(IMAGE_GEN_RETRY_DELAY_SEC)
+            continue
+        break
 
     model = params.get('model') or usage.get('model', '')
 
@@ -1620,6 +1671,49 @@ def delete_project(project_id):
             shutil.rmtree(project_dir, ignore_errors=True)
 
     remove_rag_project(project_id)
+
+
+def create_image_test_run_project(csv_path, config_path, base_name,
+                                  image_naming_column='', image_format='png', sample_size=5):
+    """Duplicate the current image project into a throwaway project containing
+    only `sample_size` random rows from the full uploaded file.
+
+    Image generation is the slowest and flakiest step in a run, so smoke-
+    testing the current tag config against a handful of rows (seconds, not
+    the full batch) before committing to the whole file is worth a one-click
+    button. The duplicate is a project like any other — it shows up on the
+    dashboard and can be deleted with the normal delete_project cleanup once
+    the user is done with it.
+
+    Returns (project_id, csv_path, config_path) for the new project.
+    """
+    df = read_csv_safe(csv_path)
+    n = min(sample_size, len(df))
+    sample_df = df.sample(n=n).reset_index(drop=True) if n > 0 else df
+
+    project_id  = str(uuid.uuid4())
+    project_dir = os.path.join(settings.MEDIA_ROOT, project_id)
+    os.makedirs(project_dir, exist_ok=True)
+
+    new_csv_path = os.path.join(project_dir, os.path.basename(csv_path))
+    sample_df.to_csv(new_csv_path, index=False)
+
+    new_config_path = ''
+    if config_path and os.path.exists(config_path):
+        new_config_path = os.path.join(project_dir, os.path.basename(config_path))
+        shutil.copyfile(config_path, new_config_path)
+
+    save_project(
+        project_id=project_id,
+        name=f"{base_name} (test run)",
+        csv_path=new_csv_path,
+        config_path=new_config_path,
+        mode='image',
+    )
+    if image_naming_column or image_format:
+        update_project(project_id, image_naming_column=image_naming_column,
+                       image_format=image_format or 'png')
+    return project_id, new_csv_path, new_config_path
 
 
 def _project_image_settings(project_id):
